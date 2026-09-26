@@ -1,0 +1,518 @@
+
+import { Theme, Brand } from "../slintcn/tokens.slint";
+import { Spinner } from "../slintcn/components/spinner.slint";
+import { Arc } from "../slintcn/components/arc.slint";
+import { HintState } from "../slintcn/components/tooltip.slint";
+import { Icon } from "../icons.slint";
+
+export component Panel inherits Rectangle {
+    in property <length> radius: Brand.radius_xl;
+    background: Theme.palette.surface;
+    border-radius: root.radius;
+    drop-shadow-color: rgba(0, 0, 0, 0.06);
+    drop-shadow-blur: 12px;
+    drop-shadow-offset-y: 2px;
+    @children
+}
+
+export component Inset inherits Rectangle {
+    background: Brand.panel;
+    border-radius: Brand.radius_lg;
+    @children
+}
+
+export component PillButton {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> has-icon: true;
+    in property <bool> busy: false;
+    in property <bool> enabled: true;
+    in property <bool> outlined: false;
+    in property <brush> fill: Brand.ink;
+    in property <color> label-color: #FFFFFF;
+    in property <length> height-override: 44px;
+    in property <string> hint: "";
+    // Tighter padding and label for dense rows such as the header actions.
+    in property <bool> compact: false;
+    in property <length> radius: root.compact ? Brand.radius_sm : Brand.radius_md;
+
+    callback clicked();
+
+    height: root.height-override;
+    min-width: content.preferred-width;
+    horizontal-stretch: 0;
+
+    bg := Rectangle {
+        border-radius: root.radius;
+        background: root.outlined ? transparent : root.fill;
+        border-width: root.outlined ? 1px : 0px;
+        border-color: Theme.palette.border;
+        opacity: root.enabled ? (touch.pressed ? 0.85 : 1.0) : 0.45;
+
+        animate opacity { duration: Theme.animation.fast; }
+
+        content := HorizontalLayout {
+            padding-left: root.compact ? (root.has-icon ? 12px : 14px) : (root.has-icon ? 18px : 22px);
+            padding-right: root.compact ? 14px : 22px;
+            spacing: root.compact ? 7px : 9px;
+            alignment: center;
+
+            if root.busy || root.has-icon: VerticalLayout {
+                alignment: center;
+                width: root.compact ? 14px : 16px;
+
+                if root.busy: Spinner {
+                    size: root.compact ? 14px : 16px;
+                    stroke-width: 2px;
+                    active-brush: root.outlined ? Theme.palette.text_primary : root.label-color;
+                }
+                if !root.busy: Image {
+                    source: root.icon;
+                    width: root.compact ? 14px : 16px;
+                    height: root.compact ? 14px : 16px;
+                    colorize: root.outlined ? Theme.palette.text_primary : root.label-color;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                label := Text {
+                    text: root.text;
+                    color: root.outlined ? Theme.palette.text_primary : root.label-color;
+                    font-size: root.compact ? Theme.typography.size_base : Theme.typography.size_lg;
+                    font-weight: 600;
+                    letter-spacing: 0.2px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            root.clicked();
+        }
+        changed has-hover => {
+            if (self.has-hover) {
+                root.push-hint();
+            } else {
+                HintState.hide(root.hint);
+            }
+        }
+    }
+
+    function push-hint() {
+        HintState.show(root.hint, root.absolute-position.x, root.absolute-position.y, root.width, root.height, 0px);
+    }
+
+    // A button can go disabled while hovered (e.g. while saving); make sure
+    // its hint does not stay pinned when the touch area stops reporting hover.
+    changed enabled => {
+        if (!root.enabled) {
+            HintState.hide(root.hint);
+        }
+    }
+
+    states [
+        hovered when touch.has-hover && root.enabled: {
+            bg.background: root.outlined ? Theme.palette.hover_overlay : root.fill.brighter(12%);
+        }
+    ]
+}
+
+export component ServerSwitch {
+    in property <bool> checked;
+    in property <bool> busy: false;
+    in property <bool> enabled: true;
+    in property <string> label;
+
+    callback toggled();
+
+    height: 32px;
+    min-width: content.preferred-width;
+    horizontal-stretch: 0;
+
+    content := HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            width: 44px;
+
+            track := Rectangle {
+                width: 44px;
+                height: 24px;
+                border-radius: 12px;
+                background: root.checked ? Theme.palette.primary : Brand.zinc_200;
+                opacity: root.enabled ? 1.0 : 0.45;
+
+                animate background { duration: Theme.animation.fast; }
+                animate opacity { duration: Theme.animation.fast; }
+
+                Rectangle {
+                    x: root.checked ? parent.width - self.width - 3px : 3px;
+                    y: 3px;
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 9px;
+                    background: #FFFFFF;
+                    drop-shadow-color: rgba(0, 0, 0, 0.18);
+                    drop-shadow-blur: 3px;
+                    drop-shadow-offset-y: 1px;
+
+                    animate x { duration: Theme.animation.fast; easing: cubic-bezier(0.4, 0.0, 0.2, 1); }
+                }
+            }
+        }
+
+        if root.busy: VerticalLayout {
+            alignment: center;
+            width: 14px;
+            Spinner {
+                size: 14px;
+                stroke-width: 2px;
+                active-brush: Brand.stone_500;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.label;
+                color: root.checked ? Theme.palette.text_primary : Brand.stone_500;
+                font-size: Theme.typography.size_base;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            root.toggled();
+        }
+    }
+
+    states [
+        hovered when touch.has-hover && root.enabled: {
+            track.background: root.checked
+                ? Theme.palette.primary.brighter(25%)
+                : Brand.zinc_400;
+        }
+    ]
+}
+
+export component IconButton {
+    in property <image> icon;
+    in property <color> tint: Brand.stone_400;
+    in property <color> hover-background: Theme.palette.hover_overlay;
+    in property <length> size: 28px;
+    in property <length> icon-size: 15px;
+    in property <bool> enabled: true;
+    in property <bool> busy: false;
+    in property <bool> flipped: false;
+    in property <string> hint: "";
+
+    callback clicked();
+
+    width: root.size;
+    height: root.size;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: root.size / 2;
+        background: touch.has-hover && root.enabled ? root.hover-background : transparent;
+        opacity: root.enabled ? 1.0 : 0.4;
+
+        if root.busy: Spinner {
+            size: root.icon-size;
+            stroke-width: 2px;
+            active-brush: root.tint;
+        }
+        if !root.busy: Image {
+            source: root.icon;
+            width: root.icon-size;
+            height: root.icon-size;
+            colorize: root.tint;
+            transform-rotation: root.flipped ? 180deg : 0deg;
+            animate transform-rotation { duration: Theme.animation.fast; }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            root.clicked();
+        }
+        changed has-hover => {
+            if (self.has-hover) {
+                root.push-hint();
+            } else {
+                HintState.hide(root.hint);
+            }
+        }
+    }
+
+    function push-hint() {
+        HintState.show(root.hint, root.absolute-position.x, root.absolute-position.y, root.width, root.height, 0px);
+    }
+}
+
+export component SectionHeader {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> subtitle;
+
+    VerticalLayout {
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                border-radius: 18px;
+                background: Brand.panel;
+                Image {
+                    source: root.icon;
+                    width: 18px;
+                    height: 18px;
+                    colorize: Brand.stone_600;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: root.title;
+                    color: Theme.palette.text_primary;
+                    font-size: Theme.typography.size_lg;
+                    font-weight: 700;
+                }
+                if root.subtitle != "": Text {
+                    text: root.subtitle;
+                    color: Brand.stone_500;
+                    font-size: Theme.typography.size_base;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.palette.border;
+        }
+    }
+}
+
+export component Overline inherits Text {
+    color: Brand.stone_400;
+    font-size: Theme.typography.size_base;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+
+export component StatusPill {
+    in property <string> text;
+    in property <brush> background: Brand.panel;
+    in property <color> label-color: Brand.stone_600;
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    in property <bool> compact: false;
+
+    height: root.compact ? 22px : 26px;
+    horizontal-stretch: 0;
+
+    Rectangle {
+        border-radius: root.height / 2;
+        background: root.background;
+
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 6px;
+            alignment: center;
+
+            if root.has-icon: VerticalLayout {
+                alignment: center;
+                width: 12px;
+                Image {
+                    source: root.icon;
+                    width: 12px;
+                    height: 12px;
+                    colorize: root.label-color;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.text;
+                    color: root.label-color;
+                    font-size: Theme.typography.size_base;
+                    font-weight: root.compact ? 700 : 600;
+                    letter-spacing: root.compact ? 0.6px : 0px;
+                }
+            }
+        }
+    }
+}
+
+export component TextField {
+    in property <string> placeholder;
+    in-out property <string> text;
+    in property <bool> password: false;
+    in property <bool> monospace: true;
+    in property <bool> enabled: true;
+    in property <TextHorizontalAlignment> horizontal-alignment: left;
+
+    callback edited(string);
+    callback accepted(string);
+
+    height: 44px;
+    horizontal-stretch: 1;
+
+    Rectangle {
+        border-radius: Brand.radius_sm;
+        background: Theme.palette.surface;
+        border-width: 1px;
+        border-color: edit.has-focus ? Theme.palette.text_primary : Theme.palette.border;
+
+        animate border-color { duration: Theme.animation.fast; }
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+
+            edit := TextInput {
+                text <=> root.text;
+                enabled: root.enabled;
+                color: Theme.palette.text_primary;
+                font-size: root.password ? (Theme.typography.size_base + 2px) : Theme.typography.size_base;
+                font-family: root.monospace ? Brand.mono_font : Brand.ui_font;
+                letter-spacing: root.password ? 3px : 0px;
+                input-type: root.password ? InputType.password : InputType.text;
+                single-line: true;
+                vertical-alignment: center;
+                horizontal-alignment: root.horizontal-alignment;
+                edited => {
+                    root.edited(self.text);
+                }
+                accepted => {
+                    root.accepted(self.text);
+                }
+            }
+        }
+
+        if root.text == "" && !edit.has-focus: Text {
+            x: 14px;
+            text: root.placeholder;
+            color: Theme.palette.text_disabled;
+            font-size: Theme.typography.size_base;
+            font-family: root.monospace ? Brand.mono_font : Brand.ui_font;
+            vertical-alignment: center;
+            height: 100%;
+        }
+    }
+}
+
+export component CreditRing {
+    in property <int> percent;
+    in property <brush> value-brush: Brand.ink;
+    in property <brush> track-brush: rgba(0, 0, 0, 0.12);
+    in property <color> label-color: Brand.ink;
+    in property <length> size: 76px;
+
+    width: root.size;
+    height: root.size;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    Arc {
+        x: 0;
+        y: 0;
+        radius: (root.size - 8px) / 2;
+        stroke-width: 7px;
+        start-angle: 0deg;
+        end-angle: 359.9deg;
+        value: max(0.0, min(1.0, root.percent / 100));
+        active-brush: root.value-brush;
+        track-brush: root.track-brush;
+    }
+
+    VerticalLayout {
+        alignment: center;
+        Text {
+            text: root.percent + "%";
+            color: root.label-color;
+            font-size: Theme.typography.size_xl;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component SettingRow {    in property <image> icon;
+    in property <bool> has-icon: true;
+    in property <string> label;
+    in property <string> description;
+
+    HorizontalLayout {
+        spacing: 16px;
+        alignment: space-between;
+
+        HorizontalLayout {
+            spacing: 12px;
+            horizontal-stretch: 1;
+
+            if root.has-icon: VerticalLayout {
+                alignment: start;
+                padding-top: 1px;
+                width: 18px;
+                Image {
+                    source: root.icon;
+                    width: 18px;
+                    height: 18px;
+                    colorize: Brand.stone_400;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 2px;
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: root.label;
+                    color: Theme.palette.text_primary;
+                    font-size: Theme.typography.size_base;
+                    font-weight: 600;
+                }
+                if root.description != "": Text {
+                    text: root.description;
+                    color: Brand.stone_500;
+                    font-size: Theme.typography.size_base;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            @children
+        }
+    }
+}
+

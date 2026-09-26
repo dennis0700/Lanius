@@ -1,0 +1,65 @@
+import { Theme } from "../tokens.slint";
+
+export component Spinner {
+    in property <length> size: 40px;
+    in property <length> stroke-width: 4px;
+    in property <color> active-brush: Theme.palette.primary;
+
+    width: size;
+    height: size;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            border-radius: parent.width / 2;
+            border-width: root.stroke-width;
+            border-color: Theme.palette.border;
+        }
+
+        rotator := Rectangle {
+            width: 100%;
+            height: 100%;
+            transform-rotation: root.spin-angle;
+
+            Path {
+                width: 100%;
+                height: 100%;
+                stroke: root.active-brush;
+                stroke-width: root.stroke-width;
+                stroke-line-cap: round;
+
+                property <length> radius: (parent.width - root.stroke-width) / 2;
+                property <length> center-x: parent.width / 2;
+                property <length> center-y: parent.height / 2;
+
+                MoveTo {
+                    x: center-x / 1px;
+                    y: (center-y - radius) / 1px;
+                }
+                ArcTo {
+                    radius-x: radius / 1px;
+                    radius-y: radius / 1px;
+                    x: (center-x - radius) / 1px;
+                    y: center-y / 1px;
+                    sweep: true;
+                    large-arc: true;
+                }
+            }
+        }
+    }
+
+    property <angle> spin-angle: 0deg;
+
+    Timer {
+        interval: 16ms;
+        running: true;
+        triggered => {
+            root.spin-angle += 6deg;
+        }
+    }
+}
+

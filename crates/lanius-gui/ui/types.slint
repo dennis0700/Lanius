@@ -1,0 +1,40 @@
+
+export struct ConfigForm {
+    auth_method: string,
+    refresh_token: string,
+    creds_file: string,
+    cli_db_file: string,
+    proxy_api_key: string,
+    lan_access: bool,
+    server_port: string,
+    auto_launch: bool,
+    auto_start_server: bool,
+}
+
+export struct LogRow {
+    time: string,
+    text: string,
+}
+
+export struct UsageView {
+    loaded: bool,
+    loading: bool,
+    error: string,
+    plan: string,
+    percent: int,
+    used_text: string,
+    limit_text: string,
+    remaining_text: string,
+    reset_date: string,
+    has_quota: bool,
+    has_overage: bool,
+    overage_enabled: bool,
+}
+
+export struct ModelRow {
+    id: string,
+    rate_text: string,
+    description: string,
+    supports_thinking: bool,
+}
+

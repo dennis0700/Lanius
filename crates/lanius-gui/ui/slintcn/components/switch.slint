@@ -1,0 +1,64 @@
+import { Theme } from "../tokens.slint";
+
+export component Switch {
+    in-out property <bool> checked: false;
+    in property <bool> disabled: false;
+
+    in property <length> track-width: 48px;
+    in property <length> track-height: 24px;
+    in property <length> thumb-size: 18px;
+
+    callback toggled(bool);
+
+    width: root.track-width + 12px;
+    height: root.track-height + 12px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    states [
+        disabled when disabled: {
+            track.background: Theme.palette.surface;
+            track.border-color: Theme.palette.text_disabled;
+            thumb.background: Theme.palette.text_disabled;
+        }
+        hover when touch.has-hover: {
+            track.background: checked ? Theme.palette.primary.brighter(10%) : Theme.palette.hover_overlay;
+        }
+    ]
+
+    track := Rectangle {
+        width: root.track-width;
+        height: root.track-height;
+        border-radius: self.height / 2;
+        border-width: 1.5px;
+        border-color: checked ? Theme.palette.primary : Theme.palette.border;
+        background: checked ? Theme.palette.primary : transparent;
+
+        animate background { duration: Theme.animation.fast; }
+        animate border-color { duration: Theme.animation.fast; }
+
+        property <length> inset: (root.track-height - root.thumb-size) / 2;
+
+        thumb := Rectangle {
+            x: checked ? (parent.width - self.width - parent.inset) : parent.inset;
+            y: parent.inset;
+            width: root.thumb-size;
+            height: root.thumb-size;
+            border-radius: self.height / 2;
+            background: checked ? Theme.palette.on_primary : Theme.palette.text_secondary;
+
+            animate x { duration: Theme.animation.fast; easing: cubic-bezier(0.4, 0.0, 0.2, 1); }
+            animate background { duration: Theme.animation.fast; }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            if (!root.disabled) {
+                root.checked = !root.checked;
+                root.toggled(root.checked);
+            }
+        }
+    }
+}
+

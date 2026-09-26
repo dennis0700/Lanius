@@ -1,0 +1,376 @@
+
+import { Theme, Brand } from "slintcn/tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Spinner } from "slintcn/components/spinner.slint";
+import { Icon } from "icons.slint";
+import { HintBubble, HintState } from "slintcn/components/tooltip.slint";
+import { Tr } from "generated/tr.slint";
+import { ConfigForm, LogRow, UsageView, ModelRow } from "types.slint";
+import { PillButton, StatusPill, Panel, ServerSwitch } from "views/common.slint";
+import { Sidebar } from "views/sidebar.slint";
+import { DashboardView } from "views/dashboard.slint";
+import { ModelsView } from "views/models.slint";
+import { SettingsView } from "views/settings.slint";
+import { LogsView } from "views/logs.slint";
+
+export { ConfigForm, LogRow, UsageView, Tr, Brand }
+
+export component MainWindow inherits Window {
+    title: "Lanius";
+    icon: Icon.logo;
+    background: Brand.ink;
+    default-font-family: Brand.ui_font;
+    default-font-size: Theme.typography.size_base;
+    preferred-width: 1180px;
+    preferred-height: 820px;
+    min-width: 1180px;
+    min-height: 820px;
+    max-width: 1180px;
+    max-height: 820px;
+
+    in property <bool> config-loading: true;
+    in property <string> config-error: "";
+
+    in property <bool> is-running;
+    in property <bool> is-starting;
+    in property <bool> is-stopping;
+    in property <bool> is-restarting;
+    in property <bool> can-start: false;
+
+    in property <[ModelRow]> models;
+    in property <bool> models-loading;
+    in property <UsageView> usage;
+
+    in property <[LogRow]> logs;
+    in property <string> logs-count-text;
+
+    in property <string> example-code;
+    in property <string> example-code-display;
+    in property <bool> example-copied;
+    in property <bool> key-copied;
+
+    in-out property <ConfigForm> form;
+    in property <[string]> detected-cli-dbs;
+    in property <[string]> detected-creds-files;
+    in property <bool> has-changes;
+    in property <bool> is-saving;
+    in property <bool> save-success;
+    in property <string> save-error;
+    in property <bool> show-restart-prompt;
+
+    in property <string> app-version;
+
+    in property <[string]> languages;
+    in property <int> language-index;
+
+    in property <bool> is-mac: false;
+
+    callback start-server();
+    callback stop-server();
+    callback restart-server();
+
+    callback form-changed();
+    callback save-config();
+    callback generate-key();
+    callback copy-key();
+    callback restart-after-save();
+
+    callback refresh-usage();
+    callback clear-logs();
+    callback export-logs();
+    callback copy-text(string);
+    callback copy-code();
+    callback example-changed(int, int);
+
+    callback select-language(int);
+
+    in-out property <int> current-view: 0;
+    property <bool> busy: root.is-starting || root.is-stopping;
+
+    // Hovered control can disappear when the view switches; drop any open hint.
+    changed current-view => {
+        HintState.dismiss();
+    }
+
+    if root.config-loading: Rectangle {
+        background: Brand.canvas;
+        VerticalLayout {
+            alignment: center;
+            spacing: 16px;
+            Rectangle {
+                height: 48px;
+                Spinner {
+                    size: 44px;
+                    stroke-width: 4px;
+                    active-brush: Brand.ink;
+                    x: (parent.width - self.width) / 2;
+                }
+            }
+            Text {
+                text: Tr.loading_config;
+                color: Brand.stone_500;
+                font-size: Theme.typography.size_base;
+                font-weight: 500;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    if !root.config-loading: VerticalLayout {
+        padding: 8px;
+        padding-top: root.is-mac ? 28px : 8px;
+        spacing: 0px;
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            Sidebar {
+                current-view: root.current-view;
+                server-running: root.is-running;
+                app-version: root.app-version;
+                select-view(index) => {
+                    root.current-view = index;
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Brand.canvas;
+                border-radius: Brand.radius_xl;
+                clip: true;
+
+                VerticalLayout {
+                    spacing: 0px;
+
+                    HorizontalLayout {
+                        padding-left: 32px;
+                        padding-right: 32px;
+                        padding-top: 20px;
+                        padding-bottom: 16px;
+                        spacing: 16px;
+                        alignment: space-between;
+                        // Pinned to the height of a title + description block so
+                        // the content below never shifts on views (settings) that
+                        // carry no description line.
+                        height: 77px;
+
+                        VerticalLayout {
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            alignment: center;
+
+                            HorizontalLayout {
+                                spacing: 12px;
+                                alignment: start;
+
+                                Text {
+                                    text: root.current-view == 0 ? Tr.dashboard
+                                        : root.current-view == 1 ? Tr.supported_models
+                                        : root.current-view == 2 ? Tr.tab_settings
+                                        : Tr.tab_logs;
+                                    color: Theme.palette.text_primary;
+                                    font-size: Theme.typography.size_2xl;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+
+                                if root.config-error != "": StatusPill {
+                                    text: Tr.configuration_error;
+                                    background: Theme.palette.critical_bg;
+                                    label-color: Brand.destructive_ink;
+                                }
+                            }
+
+                            if root.current-view != 2: Text {
+                                text: root.current-view == 0 ? Tr.dashboard_desc
+                                    : root.current-view == 1 ? Tr.models_desc
+                                    : Tr.logs_desc;
+                                color: Brand.stone_500;
+                                font-size: Theme.typography.size_base;
+                                font-weight: 500;
+                            }
+                        }
+
+                        if root.current-view == 0: HorizontalLayout {
+                            alignment: end;
+
+                            VerticalLayout {
+                                alignment: center;
+                                server-switch := ServerSwitch {
+                                    checked: root.is-running;
+                                    busy: root.busy;
+                                    enabled: !root.busy && (root.is-running || root.can-start);
+                                    label: root.is-running
+                                        ? (root.is-stopping ? Tr.stopping : Tr.status_running)
+                                        : (root.is-starting ? Tr.starting : Tr.status_stopped);
+                                    toggled => {
+                                        if (root.is-running) {
+                                            root.stop-server();
+                                        } else {
+                                            root.start-server();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.current-view == 2: VerticalLayout {
+                            alignment: center;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: end;
+                                padding-right: 48px;
+
+                                if root.has-changes && root.is-running && !root.show-restart-prompt: StatusPill {
+                                    text: Tr.config_change_hint;
+                                    background: Theme.palette.warning_bg;
+                                    label-color: Brand.warning_ink;
+                                    icon: Icon.alert;
+                                    has-icon: true;
+                                }
+                                if root.save-error != "": StatusPill {
+                                    text: root.save-error;
+                                    background: Theme.palette.critical_bg;
+                                    label-color: Brand.destructive_ink;
+                                    icon: Icon.close;
+                                    has-icon: true;
+                                }
+                                if root.save-success && !root.show-restart-prompt: StatusPill {
+                                    text: Tr.saved_successfully;
+                                    background: Theme.palette.success_bg;
+                                    label-color: Brand.success_ink;
+                                    icon: Icon.check_circle;
+                                    has-icon: true;
+                                }
+                                if root.show-restart-prompt: HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: end;
+                                    PillButton {
+                                        text: root.is-restarting ? Tr.starting : Tr.restart_server;
+                                        has-icon: false;
+                                        fill: Brand.ink;
+                                        label-color: #FFFFFF;
+                                        busy: root.is-restarting;
+                                        compact: true;
+                                        height-override: 32px;
+                                        enabled: !root.is-restarting;
+                                        clicked => {
+                                            root.restart-after-save();
+                                        }
+                                    }
+                                }
+
+                                PillButton {
+                                    text: root.is-saving ? Tr.saving_changes : Tr.save_configuration;
+                                    icon: Icon.save;
+                                    busy: root.is-saving;
+                                    enabled: !root.is-saving;
+                                    compact: true;
+                                    height-override: 32px;
+                                    hint: Tr.tooltip_save;
+                                    clicked => {
+                                        root.save-config();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
+
+                        if root.current-view == 0: VerticalLayout {
+                            padding-left: 32px;
+                            padding-right: 32px;
+                            padding-bottom: 24px;
+                            DashboardView {
+                                running: root.is-running;
+                                usage: root.usage;
+                                example-code-display: root.example-code-display;
+                                example-copied: root.example-copied;
+                                refresh-usage => {
+                                    root.refresh-usage();
+                                }
+                                example-changed(api, code) => {
+                                    root.example-changed(api, code);
+                                }
+                                copy-code => {
+                                    root.copy-code();
+                                }
+                            }
+                        }
+
+                        if root.current-view == 1: VerticalLayout {
+                            padding-left: 32px;
+                            padding-right: 32px;
+                            padding-bottom: 24px;
+                            ModelsView {
+                                models: root.models;
+                                loading: root.models-loading;
+                                copy-model(id) => {
+                                    root.copy-text(id);
+                                }
+                            }
+                        }
+
+                        if root.current-view == 2: ScrollView {
+                            width: 100%;
+                            height: 100%;
+                            VerticalLayout {
+                                padding-left: 32px;
+                                padding-right: 32px;
+                                padding-bottom: 32px;
+                                SettingsView {
+                                    form <=> root.form;
+                                    detected-cli-dbs: root.detected-cli-dbs;
+                                    detected-creds-files: root.detected-creds-files;
+                                    languages: root.languages;
+                                    language-index: root.language-index;
+                                    key-copied: root.key-copied;
+                                    form-changed => {
+                                        root.form-changed();
+                                    }
+                                    generate-key => {
+                                        root.generate-key();
+                                    }
+                                    copy-key => {
+                                        root.copy-key();
+                                    }
+                                    select-language(index) => {
+                                        root.select-language(index);
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.current-view == 3: VerticalLayout {
+                            padding-left: 32px;
+                            padding-right: 32px;
+                            padding-bottom: 24px;
+                            LogsView {
+                                vertical-stretch: 1;
+                                logs: root.logs;
+                                count-text: root.logs-count-text;
+                                clear-logs => {
+                                    root.clear-logs();
+                                }
+                                export-logs => {
+                                    root.export-logs();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Tooltip layer: declared last so it paints above every view, and outside
+    // the clipping containers so a hint is never cut off by a scroll area.
+    HintBubble {
+        layer_width: root.width;
+        layer_height: root.height;
+    }
+}
+

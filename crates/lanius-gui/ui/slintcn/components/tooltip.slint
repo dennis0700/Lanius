@@ -1,0 +1,155 @@
+
+import { Theme, Brand } from "../tokens.slint";
+
+// Single source of truth for the window-level tooltip layer.
+//
+// Any control can call `show(...)` from its own hover handler with its text
+// and absolute geometry; `HintBubble` (mounted once, as the last child of the
+// window) renders the bubble. Keeping one shared bubble means tooltips are
+// never clipped by a scroll view and always paint above every other view.
+export global HintState {
+    in-out property <string> text: "";
+    in-out property <bool> open: false;
+    in-out property <length> anchor_x: 0px;
+    in-out property <length> anchor_y: 0px;
+    in-out property <length> anchor_width: 0px;
+    in-out property <length> anchor_height: 0px;
+    // Wide controls (the auth cards) look better with a bubble that lines up
+    // with them; pass 0px to let the bubble size itself to the text instead.
+    in-out property <length> desired_width: 0px;
+
+    public function show(hint: string, x: length, y: length, w: length, h: length, want_width: length) {
+        if (hint == "") {
+            return;
+        }
+        root.text = hint;
+        root.anchor_x = x;
+        root.anchor_y = y;
+        root.anchor_width = w;
+        root.anchor_height = h;
+        root.desired_width = want_width;
+        root.open = true;
+    }
+
+    // Only the control that opened the bubble may close it, so moving between
+    // two adjacent controls does not blink the tooltip off.
+    public function hide(hint: string) {
+        if (root.text == hint) {
+            root.open = false;
+        }
+    }
+
+    public function dismiss() {
+        root.open = false;
+    }
+}
+
+// The tooltip itself. Mount exactly one instance as the last child of the
+// window so it paints on top of everything and escapes any clipping parent.
+export component HintBubble inherits Rectangle {
+    in property <length> layer_width;
+    in property <length> layer_height;
+
+    property <length> bubble_gap: 10px;
+    property <length> edge_margin: 12px;
+    property <length> bubble_pad: 14px;
+    property <length> bubble_max_width: 300px;
+    property <length> auto_width: min(root.bubble_max_width, max(150px, measure.preferred-width + 2 * root.bubble_pad));
+    property <bool> shown: HintState.open && HintState.text != "";
+
+    background: transparent;
+
+    bubble := Rectangle {
+        width: HintState.desired_width > 0px
+            ? min(HintState.desired_width, root.layer_width - 2 * root.edge_margin)
+            : root.auto_width;
+        height: label.preferred-height + 2 * root.bubble_pad;
+
+        // Centred over the anchor, kept inside the window, above the anchor
+        // when there is room and below it otherwise.
+        property <length> above_y: HintState.anchor_y - self.height - root.bubble_gap;
+        property <length> placed_y: self.above_y >= root.edge_margin
+            ? self.above_y
+            : HintState.anchor_y + HintState.anchor_height + root.bubble_gap;
+
+        x: max(root.edge_margin, min(root.layer_width - self.width - root.edge_margin,
+            HintState.anchor_x + HintState.anchor_width / 2 - self.width / 2));
+        y: max(root.edge_margin, min(root.layer_height - self.height - root.edge_margin, self.placed_y));
+
+        border-radius: Brand.radius_md;
+        background: Brand.ink;
+        drop-shadow-color: rgba(0, 0, 0, 0.3);
+        drop-shadow-blur: 18px;
+        drop-shadow-offset-y: 6px;
+
+        opacity: root.shown ? 1.0 : 0.0;
+        animate opacity { duration: Theme.animation.fast; }
+
+        label := Text {
+            x: root.bubble_pad;
+            y: root.bubble_pad;
+            width: parent.width - 2 * root.bubble_pad;
+            text: HintState.text;
+            color: #FFFFFF;
+            font-size: Theme.typography.size_base;
+            font-weight: 500;
+            wrap: word-wrap;
+        }
+
+        // Invisible single-line copy used only to measure the natural width,
+        // so short hints get a narrow bubble and long ones wrap at the max.
+        measure := Text {
+            width: 0px;
+            height: 0px;
+            text: HintState.text;
+            color: transparent;
+            font-size: Theme.typography.size_base;
+            font-weight: 500;
+            wrap: no-wrap;
+        }
+    }
+}
+
+// Small "?" affordance to hang a tooltip off a label or a row.
+export component HintDot {
+    in property <string> hint;
+    in property <length> size: 16px;
+
+    width: root.size;
+    height: root.size;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: root.size / 2;
+        background: touch.has-hover ? Brand.ink : Brand.zinc_200;
+
+        animate background { duration: Theme.animation.fast; }
+
+        Text {
+            text: "?";
+            color: touch.has-hover ? #FFFFFF : Brand.stone_500;
+            font-size: Theme.typography.size_base;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.help;
+        changed has-hover => {
+            if (self.has-hover) {
+                root.push-hint();
+            } else {
+                HintState.hide(root.hint);
+            }
+        }
+    }
+
+    function push-hint() {
+        HintState.show(root.hint, root.absolute-position.x, root.absolute-position.y, root.width, root.height, 0px);
+    }
+}

@@ -1,0 +1,27 @@
+[package]
+name = "lanius-cli"
+version = "0.1.0"
+description = "Headless entry point for Lanius (CLI and container use)"
+license = "AGPL-3.0"
+edition = "2024"
+rust-version = "1.85"
+
+[[bin]]
+name = "lanius"
+path = "src/main.rs"
+
+[dependencies]
+lanius-core = { path = "../lanius-core" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+bytes = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }

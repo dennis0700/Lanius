@@ -1,0 +1,467 @@
+//! `lanius-cli` — the headless command-line entry point for the Lanius gateway.
+//!
+//! This binary wraps [`lanius_core`], the crate that implements the actual HTTP
+//! gateway (OpenAI/Anthropic-compatible routes, upstream Kiro client, streaming
+//! parser, auth/account management, etc.). `lanius-cli` itself contains no
+//! protocol or business logic — it only parses `argv`, wires up a Tokio
+//! runtime, and delegates to `lanius_core` APIs.
+//!
+//! Supported subcommands (see [`print_usage`] for the exact help text):
+//! - *(no subcommand)* — validate the config and run the gateway in server
+//!   mode ([`serve`]), listening until a `Ctrl-C` / SIGINT is received.
+//! - `replay <raw-stream-file>` — offline-decode a previously captured raw
+//!   upstream byte stream (see [`replay`]), useful for debugging the SSE/event
+//!   parser without hitting the network.
+//! - `probe [prompt] [--capture <file>]` — perform a live end-to-end request
+//!   against the real Kiro backend (see [`probe`]), optionally writing the raw
+//!   response bytes to disk so they can later be fed back into `replay`.
+//! - `help` / `--help` / `-h` — print usage and exit successfully.
+//!
+//! Any other/unknown subcommand causes the process to print usage to stderr
+//! and exit with status code `2`.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use futures_util::StreamExt;
+use lanius_core::Config;
+use lanius_core::auth::AuthManager;
+use lanius_core::upstream::{KiroEvent, KiroEventType, KiroHttpClient, parse_kiro_stream};
+
+/// Process entry point: parses `argv`, dispatches to the requested
+/// subcommand, and returns any error up to the process exit path (a non-`Ok`
+/// return causes `anyhow`/the default Rust runtime to print the error and
+/// exit with a non-zero status).
+///
+/// Side effects:
+/// - Loads a local `.env` file via `dotenvy` (ignored if absent).
+/// - Builds the [`Config`] from environment variables.
+/// - Initializes the global `tracing` subscriber.
+/// - For the unknown-subcommand case, calls [`std::process::exit`] directly
+///   with status code `2` (bypassing the normal `Result` return path).
+fn main() -> Result<()> {
+    let _ = dotenvy::dotenv();
+
+    let config = Config::from_env();
+    init_tracing(&config.log_level);
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("replay") => {
+            let path = args
+                .get(1)
+                .context("usage: lanius replay <raw-stream-file>")?;
+            runtime()?.block_on(replay(path))
+        }
+        Some("probe") => {
+            let (capture, prompt) = parse_probe_args(&args[1..])?;
+            runtime()?.block_on(probe(config, prompt, capture))
+        }
+        Some("help" | "--help" | "-h") => {
+            print_usage();
+            Ok(())
+        }
+        Some(other) => {
+            eprintln!("unknown subcommand: {other}\n");
+            print_usage();
+            std::process::exit(2);
+        }
+        None => {
+            config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+            print_banner(&config);
+            runtime()?.block_on(serve(config))
+        }
+    }
+}
+
+/// Runs the gateway in long-lived server mode.
+///
+/// Delegates to [`lanius_core::server::serve`], passing a shutdown future that
+/// resolves when the process receives `Ctrl-C` (SIGINT), so the gateway can
+/// perform a graceful shutdown instead of being killed abruptly.
+///
+/// Side effects: binds and listens on the configured host/port (network I/O)
+/// until shutdown; blocks the calling task for the lifetime of the server.
+async fn serve(config: Config) -> Result<()> {
+    let shutdown = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!("failed to listen for shutdown signal: {e}");
+        }
+        tracing::info!("shutdown signal received");
+    };
+
+    lanius_core::server::serve(config, shutdown)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Builds a multi-threaded Tokio runtime used to drive the async subcommands
+/// (`serve`, `replay`, `probe`) from `main`, which is itself synchronous.
+///
+/// Returns an error if the runtime fails to initialize (e.g. thread spawn
+/// failure).
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to start tokio runtime")
+}
+
+/// Implements the `replay <raw-stream-file>` subcommand: reads a previously
+/// captured raw upstream byte stream from disk and feeds it through the same
+/// SSE/event parser ([`parse_kiro_stream`]) used for live traffic, entirely
+/// offline (no network access).
+///
+/// Parameters:
+/// - `path`: filesystem path to the raw capture file (as produced by
+///   `probe --capture <file>`).
+///
+/// Side effects: reads the file from disk and prints decoded events plus a
+/// summary to stdout.
+///
+/// Errors if the file cannot be read or if the stream fails to parse.
+async fn replay(path: &str) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("failed to read {path}"))?;
+    println!("replaying {} ({} bytes)\n", path, bytes.len());
+
+    // Allow overriding the chunk size via env var so the same fixture can be
+    // replayed with different byte-boundary framing (see the framing
+    // independence tip in `print_usage`) — this is how we prove the parser
+    // is byte-boundary agnostic and doesn't rely on chunks lining up with
+    // SSE event boundaries. Falls back to a fixed default (64) if unset,
+    // invalid, or non-positive.
+    let chunk_size: usize = std::env::var("REPLAY_CHUNK_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(64);
+    println!("chunk size: {chunk_size}\n");
+
+    // Re-chunk the captured bytes into artificial "network reads" of
+    // `chunk_size`, wrapped in `Ok` to mimic the `Result<Bytes, reqwest::Error>`
+    // item type that a real `reqwest` byte stream would yield.
+    let chunks: Vec<std::result::Result<bytes::Bytes, reqwest::Error>> = bytes
+        .chunks(chunk_size)
+        .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+        .collect();
+
+    let stream = futures_util::stream::iter(chunks);
+    let events = parse_kiro_stream(
+        stream,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+
+    let summary = print_events(events).await?;
+    println!("\n{summary}");
+    Ok(())
+}
+
+/// Parses the arguments following the `probe` subcommand.
+///
+/// Accepted forms: `probe [prompt] [--capture <file>]`. The `--capture`
+/// flag consumes the following argument as the capture file path; any other
+/// `--`-prefixed argument is rejected as an unknown option. A bare argument
+/// (not starting with `--`) is treated as the prompt text; if no prompt is
+/// given, defaults to `"Hello"`.
+///
+/// Returns `(capture_path, prompt)` on success, or an error describing usage
+/// if `--capture` is missing its value or an unrecognized flag is passed.
+fn parse_probe_args(args: &[String]) -> Result<(Option<std::path::PathBuf>, String)> {
+    let mut capture = None;
+    let mut prompt = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--capture" => {
+                let path = it
+                    .next()
+                    .context("usage: lanius probe [prompt] [--capture <file>]")?;
+                capture = Some(std::path::PathBuf::from(path));
+            }
+            other if other.starts_with("--") => {
+                anyhow::bail!("unknown probe option: {other}");
+            }
+            other => prompt = Some(other.to_string()),
+        }
+    }
+    Ok((capture, prompt.unwrap_or_else(|| "Hello".to_string())))
+}
+
+/// Implements the `probe [prompt] [--capture <file>]` subcommand: performs a
+/// live end-to-end request against the real Kiro backend using the same
+/// [`AuthManager`] / [`KiroHttpClient`] machinery as the gateway itself, then
+/// streams and decodes the response with [`parse_kiro_stream`].
+///
+/// Parameters:
+/// - `config`: validated gateway configuration (region, auth, timeouts, etc.).
+/// - `prompt`: the user message text sent as the sole turn of a new
+///   conversation.
+/// - `capture`: optional filesystem path; when present, the raw upstream
+///   response bytes are buffered in memory while streaming and written to
+///   this path once the stream completes, producing a fixture consumable by
+///   the `replay` subcommand.
+///
+/// Side effects:
+/// - Network I/O: obtains/refreshes an access token, then issues a POST to
+///   the Kiro `generateAssistantResponse` endpoint and reads the streamed
+///   response.
+/// - Prints auth/account diagnostics and decoded stream events to stdout.
+/// - File I/O: if `capture` is set, creates parent directories as needed and
+///   writes the captured raw bytes to disk.
+///
+/// Errors if config validation fails, auth/token retrieval fails, the
+/// upstream request fails, the response stream fails to parse, or the
+/// capture file cannot be created/written.
+async fn probe(config: Config, prompt: String, capture: Option<std::path::PathBuf>) -> Result<()> {
+    config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let auth = Arc::new(AuthManager::new(config.clone()).map_err(|e| anyhow::anyhow!("{e}"))?);
+
+    println!("auth type   : {:?}", auth.auth_type().await);
+    println!("region      : {}", auth.region().await);
+    println!("fingerprint : {}", auth.fingerprint());
+    match auth.profile_arn().await {
+        Some(arn) => println!("profile arn : {arn}"),
+        None => println!("profile arn : (none — Builder ID account)"),
+    }
+
+    let token = auth
+        .access_token()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to obtain access token: {e}"))?;
+    println!("access token: obtained ({} chars)\n", token.len());
+
+    let client = KiroHttpClient::new(auth.clone(), &config).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let conversation_state = serde_json::json!({
+        "chatTriggerType": "MANUAL",
+        "conversationId": uuid_v4(),
+        "currentMessage": {
+            "userInputMessage": {
+                "content": prompt,
+                "modelId": "auto",
+                "origin": "AI_EDITOR",
+            }
+        },
+        "history": [],
+    });
+    let mut payload = serde_json::json!({ "conversationState": conversation_state });
+    if let Some(arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
+        payload["profileArn"] = serde_json::Value::String(arn);
+    }
+
+    let url = config.generate_assistant_response_url();
+    println!("POST {url}\n");
+
+    let response = client
+        .request_with_retry(reqwest::Method::POST, &url, Some(payload), None, true)
+        .await
+        .map_err(|e| anyhow::anyhow!("upstream request failed: {e}"))?;
+
+    println!("HTTP {}\n", response.status());
+
+    let byte_stream = response.bytes_stream();
+
+    // Only allocate a capture buffer when `--capture` was requested, so a
+    // plain probe run has no extra memory/CPU overhead.
+    let captured = capture
+        .is_some()
+        .then(|| Arc::new(std::sync::Mutex::new(Vec::<u8>::new())));
+    let sink = captured.clone();
+    // Tee each raw chunk into the capture buffer (if any) as it flows through
+    // the stream, without altering what's forwarded to the parser below.
+    // The lock can only be poisoned if a previous holder panicked while
+    // holding it, but the critical section here is just an infallible
+    // `Vec::extend_from_slice`, so poisoning is unreachable in practice;
+    // recovering via `into_inner` (rather than `.expect`) means we still
+    // salvage whatever bytes were captured even if that invariant is ever
+    // violated, instead of turning a benign panic into probe/replay failure.
+    let byte_stream = byte_stream.inspect(move |chunk| {
+        if let (Some(sink), Ok(bytes)) = (sink.as_ref(), chunk) {
+            sink.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(bytes);
+        }
+    });
+
+    let events = parse_kiro_stream(
+        byte_stream,
+        config.first_token_timeout,
+        config.streaming_read_timeout,
+    );
+
+    let summary = print_events(events).await?;
+    println!("\n{summary}");
+
+    // Flush the captured raw bytes to disk only after the stream has fully
+    // drained, so the fixture file reflects the complete response. See the
+    // note above `byte_stream.inspect` on why `unwrap_or_else(into_inner)`
+    // (rather than `.expect`) is used to read the lock here too.
+    if let (Some(path), Some(sink)) = (capture, captured) {
+        let bytes = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&path, bytes.as_slice())
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        println!("captured {} raw bytes to {}", bytes.len(), path.display());
+    }
+
+    Ok(())
+}
+
+/// Running tally of decoded stream events, accumulated by [`print_events`]
+/// and printed as a one-line summary once the stream ends.
+#[derive(Default)]
+struct Summary {
+    content_events: usize,
+    thinking_events: usize,
+    tool_calls: usize,
+    usage_events: usize,
+    context_usage_events: usize,
+    content_chars: usize,
+}
+
+impl std::fmt::Display for Summary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "summary: {} content ({} chars), {} thinking, {} tool_use, {} usage, {} context_usage",
+            self.content_events,
+            self.content_chars,
+            self.thinking_events,
+            self.tool_calls,
+            self.usage_events,
+            self.context_usage_events,
+        )
+    }
+}
+
+/// Drains a decoded [`KiroEvent`] stream (from either `replay` or `probe`),
+/// printing a human-readable line per event to stdout and classifying each
+/// event by [`KiroEventType`] into a running [`Summary`].
+///
+/// This is the shared "sink" for both offline replay and live probing, so
+/// the two subcommands produce identically formatted output and can be
+/// diffed against each other.
+///
+/// Returns the accumulated [`Summary`] once the stream ends, or an error if
+/// any individual event in the stream is an `Err` (i.e. a parser/transport
+/// failure, distinct from the in-band `KiroEventType::Error` event which is
+/// merely printed).
+async fn print_events(
+    events: impl futures_util::Stream<Item = lanius_core::Result<KiroEvent>>,
+) -> Result<Summary> {
+    let mut events = std::pin::pin!(events);
+    let mut summary = Summary::default();
+
+    while let Some(event) = events.next().await {
+        let event = event.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
+        match event.event_type {
+            KiroEventType::Content => {
+                let c = event.content.unwrap_or_default();
+                summary.content_events += 1;
+                summary.content_chars += c.chars().count();
+                println!("[content]       {c:?}");
+            }
+            KiroEventType::Thinking => {
+                summary.thinking_events += 1;
+                if let Some(c) = event.thinking_content {
+                    println!("[thinking]      {c:?}");
+                }
+                if let Some(signature) = event.thinking_signature {
+                    println!("[thinking sig]  {} chars", signature.chars().count());
+                }
+            }
+            KiroEventType::ToolUse => {
+                summary.tool_calls += 1;
+                if let Some(tc) = event.tool_use {
+                    println!(
+                        "[tool_use]      id={:?} name={} args={}",
+                        tc.id, tc.name, tc.arguments
+                    );
+                    if let Some(t) = tc.truncation {
+                        println!(
+                            "                !! TRUNCATED by upstream: {} ({} bytes)",
+                            t.reason, t.size_bytes
+                        );
+                    }
+                }
+            }
+            KiroEventType::Usage => {
+                summary.usage_events += 1;
+                println!("[usage]         {:?}", event.usage);
+            }
+            KiroEventType::ContextUsage => {
+                summary.context_usage_events += 1;
+                println!("[context_usage] {:?}", event.context_usage_percentage);
+            }
+            KiroEventType::Error => {
+                println!("[error]         {:?}", event.content);
+            }
+        }
+    }
+
+    Ok(summary)
+}
+
+/// Generates a fresh random conversation id for the `probe` subcommand by
+/// delegating to `lanius_core`'s conversation-id generator with no seed
+/// components.
+fn uuid_v4() -> String {
+    lanius_core::utils::generate_conversation_id(&[])
+}
+
+/// Initializes the global `tracing` subscriber for the process.
+///
+/// Honors the standard `RUST_LOG`-style env filter if set; otherwise falls
+/// back to a filter derived from `level` (typically `config.log_level`).
+/// Side effect: installs a global subscriber via `fmt().init()`, which
+/// panics if a subscriber has already been set.
+fn init_tracing(level: &str) {
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(level.to_ascii_lowercase()));
+
+    fmt().with_env_filter(filter).with_target(false).init();
+}
+
+/// Prints the CLI usage/help text (subcommands and a framing-independence
+/// testing tip) to stdout. Used both for `help`/`--help`/`-h` and as part of
+/// the error path for unrecognized subcommands.
+fn print_usage() {
+    println!(
+        "{} v{}\n\n\
+         USAGE:\n\
+         \x20 lanius                 validate config and print the banner\n\
+         \x20 lanius replay <file>   decode a captured raw stream offline\n\
+         \x20 lanius probe [prompt] [--capture <file>]\n\
+         \x20                        live end-to-end upstream probe\n\n\
+         Capture a `replay` fixture with `lanius probe --capture debug_logs/raw.bin`, then\n\
+         prove framing independence:\n\
+         \x20 for n in 1 7 64 100000; do REPLAY_CHUNK_SIZE=$n lanius replay <file> | md5; done\n",
+        lanius_core::config::APP_TITLE,
+        lanius_core::config::APP_VERSION,
+    );
+}
+
+/// Prints the startup banner shown when the gateway launches in server mode
+/// (no subcommand given): app name/version, listen address, region, and
+/// debug mode.
+fn print_banner(config: &Config) {
+    println!(
+        "\n{} v{}\n  listening : http://{}:{}\n  region    : {}\n  debug     : {:?}\n",
+        lanius_core::config::APP_TITLE,
+        lanius_core::config::APP_VERSION,
+        config.server_host,
+        config.server_port,
+        config.region,
+        config.debug_mode,
+    );
+}

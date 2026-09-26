@@ -1,0 +1,113 @@
+
+import { Theme } from "../tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component Select {
+    in property <[string]> options: [];
+    in property <string> placeholder: "Select an option...";
+    in-out property <int> selected-index: -1;
+    in property <brush> surface-override: Theme.palette.surface;
+    in property <color> text-override: Theme.palette.text_primary;
+    in property <color> border-override: Theme.palette.border;
+
+    out property <bool> is-open: false;
+
+    callback selected(int, string);
+
+    width: 200px;
+    height: 40px;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: Theme.spacing.sm;
+        border-width: 1px;
+        border-color: root.border-override;
+        background: root.surface-override;
+
+        HorizontalLayout {
+            padding-left: Theme.spacing.sm;
+            padding-right: Theme.spacing.sm;
+            spacing: Theme.spacing.xs;
+
+            Text {
+                text: root.selected-index >= 0 && root.selected-index < root.options.length ? root.options[root.selected-index] : root.placeholder;
+                color: root.text-override;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+                font-family: Theme.typography.font_family;
+                font-size: Theme.typography.size_base;
+            }
+
+            Text {
+                text: "▾";
+                color: root.text-override;
+                vertical-alignment: center;
+                font-size: Theme.typography.size_base;
+            }
+        }
+
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                popup.show();
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + Theme.spacing.xs;
+        width: max(root.width, 160px);
+        height: min(root.options.length * 32px + 2 * Theme.spacing.xs, 260px);
+
+        Rectangle {
+            border-radius: Theme.spacing.sm;
+            border-width: 1px;
+            border-color: root.border-override;
+            background: root.surface-override;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: rgba(0, 0, 0, 0.25);
+
+            ScrollView {
+                x: Theme.spacing.xs;
+                y: Theme.spacing.xs;
+                width: parent.width - 2 * Theme.spacing.xs;
+                height: parent.height - 2 * Theme.spacing.xs;
+
+                VerticalLayout {
+                    for option[index] in root.options: Rectangle {
+                        height: 32px;
+                        border-radius: Theme.spacing.xs;
+                        background: ta.has-hover ? Theme.palette.hover_overlay : transparent;
+
+                        HorizontalLayout {
+                            padding-left: Theme.spacing.sm;
+                            padding-right: Theme.spacing.sm;
+
+                            Text {
+                                text: option;
+                                color: root.text-override;
+                                vertical-alignment: center;
+                                font-family: Theme.typography.font_family;
+                                font-size: Theme.typography.size_base;
+                                font-weight: root.selected-index == index ? 700 : Theme.typography.body_weight;
+                            }
+                        }
+
+                        ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.selected-index = index;
+                                root.selected(index, option);
+                                popup.close();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -1,0 +1,224 @@
+
+import { Theme, Brand } from "../slintcn/tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Switch } from "../slintcn/components/switch.slint";
+import { Icon } from "../icons.slint";
+import { Tr } from "../generated/tr.slint";
+import { LogRow } from "../types.slint";
+import { IconButton, Panel } from "common.slint";
+
+export component LogsView {
+    in property <[LogRow]> logs;
+    in property <string> count-text;
+    in-out property <bool> auto-scroll: true;
+
+    callback clear-logs();
+    callback export-logs();
+
+    Panel {
+        clip: true;
+
+        VerticalLayout {
+            spacing: 0px;
+
+            Rectangle {
+                height: 64px;
+                vertical-stretch: 0;
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.palette.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    spacing: 16px;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
+
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 8px;
+                            background: Brand.panel;
+                            Image {
+                                source: Icon.terminal;
+                                width: 16px;
+                                height: 16px;
+                                colorize: Brand.stone_500;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            Text {
+                                text: Tr.system_output;
+                                color: Theme.palette.text_primary;
+                                font-size: Theme.typography.size_base;
+                                font-weight: 500;
+                            }
+                            Text {
+                                text: root.count-text;
+                                color: Brand.stone_500;
+                                font-size: Theme.typography.size_base;
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: end;
+
+                            Rectangle {
+                                horizontal-stretch: 0;
+                                height: 32px;
+                                border-radius: 16px;
+                                background: Brand.panel;
+                                border-width: 1px;
+                                border-color: Theme.palette.border;
+
+                                HorizontalLayout {
+                                    padding-left: 2px;
+                                    padding-right: 12px;
+                                    spacing: 2px;
+                                    alignment: start;
+
+                                    Switch {
+                                        track-width: 34px;
+                                        track-height: 18px;
+                                        thumb-size: 14px;
+                                        checked: root.auto-scroll;
+                                        toggled(value) => {
+                                            root.auto-scroll = value;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.auto-scroll ? Tr.live : Tr.paused;
+                                        color: Brand.stone_600;
+                                        font-size: Theme.typography.size_base;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            IconButton {
+                                icon: Icon.download;
+                                enabled: root.logs.length > 0;
+                                tint: Brand.stone_500;
+                                hover-background: Brand.zinc_100;
+                                size: 32px;
+                                icon-size: 16px;
+                                clicked => {
+                                    root.export-logs();
+                                }
+                            }
+                            IconButton {
+                                icon: Icon.trash;
+                                enabled: root.logs.length > 0;
+                                tint: Brand.stone_500;
+                                hover-background: Theme.palette.critical_bg;
+                                size: 32px;
+                                icon-size: 16px;
+                                clicked => {
+                                    root.clear-logs();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                clip: true;
+
+                scroll := ScrollView {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        padding-top: 16px;
+                        padding-bottom: 16px;
+                        spacing: 2px;
+
+                        for row in root.logs: HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            vertical-stretch: 0;
+                            height: self.preferred-height;
+
+                            Text {
+                                text: row.time;
+                                color: Brand.stone_500;
+                                font-size: Theme.typography.size_base;
+                                font-family: Brand.mono_font;
+                                width: row.time == "" ? 0px : 72px;
+                                horizontal-alignment: right;
+                                vertical-stretch: 0;
+                            }
+                            Text {
+                                text: row.text;
+                                color: Theme.palette.text_primary;
+                                font-size: Theme.typography.size_base;
+                                font-family: Brand.mono_font;
+                                horizontal-stretch: 1;
+                                vertical-stretch: 0;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                if root.logs.length == 0: VerticalLayout {
+                    alignment: center;
+                    spacing: 14px;
+                    Rectangle {
+                        height: 64px;
+                        Rectangle {
+                            width: 64px;
+                            height: 64px;
+                            x: (parent.width - self.width) / 2;
+                            border-radius: 32px;
+                            background: Brand.panel;
+                            Image {
+                                source: Icon.list;
+                                width: 26px;
+                                height: 26px;
+                                colorize: Brand.stone_400;
+                            }
+                        }
+                    }
+                    Text {
+                        text: Tr.no_logs_available;
+                        color: Brand.stone_500;
+                        font-size: Theme.typography.size_base;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                Timer {
+                    interval: 150ms;
+                    running: root.auto-scroll && root.logs.length > 0;
+                    triggered => {
+                        scroll.content-y = min(0px, scroll.visible-height - scroll.content-height);
+                    }
+                }
+            }
+        }
+    }
+}
+

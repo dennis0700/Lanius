@@ -1,0 +1,216 @@
+
+import { Theme, Brand } from "../slintcn/tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Spinner } from "../slintcn/components/spinner.slint";
+import { Icon } from "../icons.slint";
+import { Tr } from "../generated/tr.slint";
+import { Panel, IconButton } from "common.slint";
+import { ModelRow } from "../types.slint";
+import { HintState } from "../slintcn/components/tooltip.slint";
+
+export component ModelsView {
+    in property <[ModelRow]> models;
+    in property <bool> loading;
+
+    callback copy-model(string);
+
+    property <bool> has-models: root.models.length > 0;
+    property <bool> is-loading: root.loading && !root.has-models;
+
+    Panel {
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+
+            HorizontalLayout {
+                alignment: space-between;
+                vertical-stretch: 0;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+
+                    VerticalLayout {
+                        alignment: center;
+                        width: 16px;
+                        Image {
+                            source: Icon.sparkles;
+                            width: 16px;
+                            height: 16px;
+                            colorize: Brand.stone_500;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: root.has-models
+                                ? root.models.length + " " + Tr.supported_models
+                                : Tr.supported_models;
+                            color: Theme.palette.text_primary;
+                            font-size: Theme.typography.size_lg;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.palette.border;
+                vertical-stretch: 0;
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                if root.is-loading: VerticalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    Rectangle {
+                        height: 24px;
+                        Spinner {
+                            size: 24px;
+                            stroke-width: 2px;
+                            active-brush: Brand.stone_400;
+                            x: (parent.width - self.width) / 2;
+                        }
+                    }
+                }
+
+                if !root.is-loading && !root.has-models: VerticalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    Rectangle {
+                        height: 56px;
+                        Rectangle {
+                            width: 56px;
+                            height: 56px;
+                            x: (parent.width - self.width) / 2;
+                            border-radius: 28px;
+                            background: Brand.panel;
+                            Image {
+                                source: Icon.sparkles;
+                                width: 24px;
+                                height: 24px;
+                                colorize: Brand.stone_400;
+                            }
+                        }
+                    }
+                    Text {
+                        text: Tr.ready_to_initialize;
+                        color: Brand.stone_500;
+                        font-size: Theme.typography.size_base;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                if root.has-models: ScrollView {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        spacing: 4px;
+                        padding-right: 14px;
+
+                        for model in root.models: model-row := Rectangle {
+                            height: model.description == "" && model.rate_text == "" ? 38px : 52px;
+                            border-radius: Brand.radius_sm;
+                            row-touch := TouchArea { }
+
+                            background: row-touch.has-hover ? Brand.zinc_100 : transparent;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 8px;
+                                spacing: 8px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+
+                                    Text {
+                                        text: model.id;
+                                        color: Theme.palette.text_primary;
+                                        font-size: 14px;
+                                        font-family: Brand.mono_font;
+                                        overflow: elide;
+                                    }
+
+                                    if model.description != "": Text {
+                                        text: model.description;
+                                        color: Brand.stone_500;
+                                        font-size: Theme.typography.size_base;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                // Icon-only marker; its meaning is given by
+                                // the hover hint and the accessible label.
+                                if model.supports_thinking: VerticalLayout {
+                                    alignment: center;
+                                    thinking-icon := Rectangle {
+                                        width: 16px;
+                                        height: 16px;
+                                        Image {
+                                            source: Icon.brain;
+                                            width: 16px;
+                                            height: 16px;
+                                            colorize: Brand.stone_500;
+                                            accessible-role: image;
+                                            accessible-label: Tr.supports_thinking;
+                                        }
+                                        TouchArea {
+                                            changed has-hover => {
+                                                if (self.has-hover) {
+                                                    HintState.show(Tr.supports_thinking, thinking-icon.absolute-position.x, thinking-icon.absolute-position.y, thinking-icon.width, thinking-icon.height, 0px);
+                                                } else {
+                                                    HintState.hide(Tr.supports_thinking);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if model.rate_text != "": VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        border-radius: Brand.radius_sm;
+                                        background: Brand.panel;
+                                        width: rate-text.width + 16px;
+                                        height: 22px;
+                                        rate-text := Text {
+                                            text: model.rate_text;
+                                            color: Brand.stone_600;
+                                            font-size: Theme.typography.size_base;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    width: 26px;
+                                    IconButton {
+                                        icon: Icon.copy;
+                                        tint: Brand.stone_400;
+                                        size: 26px;
+                                        icon-size: 14px;
+                                        clicked => {
+                                            root.copy-model(model.id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -1,0 +1,43 @@
+[package]
+name = "lanius-core"
+version = "0.1.0"
+description = "OpenAI- and Anthropic-compatible bridge for the Kiro (AWS CodeWhisperer) API"
+license = "AGPL-3.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "lanius_core"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+tiktoken-rs = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+dirs = { workspace = true }
+whoami = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+async-stream = { workspace = true }
+bytes = { workspace = true }
+once_cell = { workspace = true }
+regex = { workspace = true }
+urlencoding = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+proptest = { workspace = true }
+serde_json = { workspace = true }

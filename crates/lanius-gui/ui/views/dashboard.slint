@@ -1,0 +1,233 @@
+
+import { Theme, Brand } from "../slintcn/tokens.slint";
+import { Icon } from "../icons.slint";
+import { Tr } from "../generated/tr.slint";
+import { UsageView } from "../types.slint";
+import { IconButton, StatusPill, CreditRing } from "common.slint";
+import { ApiExamplesView } from "examples.slint";
+
+component StatusCard {
+    in property <bool> running;
+    in property <UsageView> usage;
+
+    callback refresh-usage();
+
+    property <bool> show-credits: root.running && root.usage.loaded && root.usage.has_quota;
+
+    card := Rectangle {
+        border-radius: Brand.radius_xl;
+        background: Theme.palette.surface;
+        border-width: 1px;
+        border-color: Theme.palette.border;
+        clip: true;
+
+        drop-shadow-color: rgba(0, 0, 0, 0.06);
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 2px;
+
+        if root.running: Image {
+            source: Icon.activity;
+            width: 170px;
+            height: 170px;
+            x: parent.width - 320px;
+            y: parent.height - 130px;
+            colorize: rgba(0, 0, 0, 0.04);
+        }
+
+        VerticalLayout {
+            padding: 24px;
+            spacing: 0px;
+
+            HorizontalLayout {
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 10px;
+                        background: Brand.panel;
+                        Image {
+                            source: Icon.activity;
+                            width: 16px;
+                            height: 16px;
+                            colorize: root.running ? Theme.palette.text_primary : Brand.stone_400;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: Tr.gateway_status;
+                            color: root.running ? Theme.palette.text_primary : Brand.stone_500;
+                            font-size: Theme.typography.size_base;
+                            font-weight: 600;
+                            letter-spacing: 0.5px;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    if root.running && root.usage.plan != "": VerticalLayout {
+                        alignment: center;
+                        StatusPill {
+                            text: root.usage.plan;
+                            background: Brand.ink;
+                            label-color: #FFFFFF;
+                            compact: true;
+                        }
+                    }
+                    if !root.running: VerticalLayout {
+                        alignment: center;
+                        StatusPill {
+                            text: Tr.offline;
+                            background: Brand.panel;
+                            label-color: Brand.stone_500;
+                            compact: true;
+                        }
+                    }
+                    if root.running: VerticalLayout {
+                        alignment: center;
+                        width: 24px;
+                        usage-refresh := IconButton {
+                            icon: Icon.refresh;
+                            size: 24px;
+                            icon-size: 14px;
+                            tint: root.running ? Theme.palette.text_primary : Brand.stone_400;
+                            hover-background: rgba(0, 0, 0, 0.06);
+                            busy: root.usage.loading;
+                            clicked => {
+                                root.refresh-usage();
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 8px;
+            }
+
+            HorizontalLayout {
+                spacing: 16px;
+                alignment: space-between;
+
+                VerticalLayout {
+                    spacing: 4px;
+                    horizontal-stretch: 1;
+                    alignment: end;
+
+                    Text {
+                        text: root.running ? Tr.online : Tr.stopped;
+                        color: root.running ? Theme.palette.text_primary : Brand.zinc_200;
+                        font-size: Theme.typography.size_display;
+                        font-weight: 700;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+
+                    if root.show-credits: VerticalLayout {
+                        alignment: center;
+                        spacing: 3px;
+                        width: 160px;
+
+                        if root.ring-hover: credit-figures := Text {
+                            text: root.usage.used_text + " / " + root.usage.limit_text;
+                            color: Theme.palette.text_primary;
+                            font-size: Theme.typography.size_base;
+                            font-weight: 700;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                        }
+                        if root.ring-hover: Text {
+                            text: Tr.remaining_quota + ": " + root.usage.remaining_text;
+                            color: Brand.stone_500;
+                            font-size: Theme.typography.size_base;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                        }
+
+                        if !root.ring-hover && root.usage.has_overage: Text {
+                            text: Tr.usage_overage + ": " + (root.usage.overage_enabled ? Tr.usage_overage_on : Tr.usage_overage_off);
+                            color: Brand.stone_500;
+                            font-size: Theme.typography.size_base;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                        }
+                        if !root.ring-hover && root.usage.reset_date != "": credit-reset := Text {
+                            text: Tr.usage_resets + " " + root.usage.reset_date;
+                            color: Brand.stone_500;
+                            font-size: Theme.typography.size_base;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                        }
+                    }
+
+                    credit-ring-box := Rectangle {
+                        width: 76px;
+                        height: 76px;
+
+                        if root.show-credits: CreditRing {
+                            percent: root.usage.percent;
+                            size: 76px;
+                            value-brush: root.usage.percent >= 90 ? Brand.destructive : (root.usage.percent >= 70 ? Brand.warning : Brand.ink);
+                            track-brush: rgba(0, 0, 0, 0.1);
+                            label-color: Theme.palette.text_primary;
+                        }
+
+                        ring-touch := TouchArea { }
+                    }
+                }
+            }
+        }
+    }
+
+    property <bool> ring-hover: ring-touch.has-hover;
+}
+
+export component DashboardView {
+    in property <bool> running;
+    in property <UsageView> usage;
+
+    in property <string> example-code-display;
+    in property <bool> example-copied;
+
+    callback refresh-usage();
+    callback example-changed(int, int);
+    callback copy-code();
+
+    VerticalLayout {
+        spacing: 16px;
+
+        StatusCard {
+            height: 186px;
+            vertical-stretch: 0;
+            running: root.running;
+            usage: root.usage;
+            refresh-usage => {
+                root.refresh-usage();
+            }
+        }
+
+        ApiExamplesView {
+            vertical-stretch: 1;
+            code: root.example-code-display;
+            copied: root.example-copied;
+            example-changed(api, code) => {
+                root.example-changed(api, code);
+            }
+            copy-code => {
+                root.copy-code();
+            }
+        }
+    }
+}
+

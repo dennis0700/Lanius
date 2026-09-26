@@ -1,0 +1,175 @@
+
+import { Theme, Brand } from "../slintcn/tokens.slint";
+import { Icon } from "../icons.slint";
+import { Tr } from "../generated/tr.slint";
+
+component NavButton {
+    in property <bool> active;
+    in property <image> icon;
+    in property <string> label;
+
+    callback clicked();
+
+    height: 46px;
+
+    Rectangle {
+        border-radius: Brand.radius_md;
+        background: root.active ? Brand.ink_raised : (touch.has-hover ? Brand.ink_soft : transparent);
+
+        animate background { duration: Theme.animation.fast; }
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 14px;
+            alignment: start;
+
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                y: (parent.height - self.height) / 2;
+
+                Image {
+                    source: root.icon;
+                    width: 20px;
+                    height: 20px;
+                    colorize: root.active ? #FFFFFF : Brand.stone_400;
+                }
+            }
+
+            Text {
+                text: root.label;
+                color: root.active ? #FFFFFF : Brand.stone_400;
+                font-size: Theme.typography.size_base;
+                font-weight: root.active ? 600 : 500;
+                vertical-alignment: center;
+            }
+        }
+
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component Sidebar {
+    in property <int> current-view;
+    in property <bool> server-running;
+    in property <string> app-version;
+
+    callback select-view(int);
+
+    width: 232px;
+
+    Rectangle {
+        background: Brand.ink;
+        border-top-left-radius: Brand.radius_xl;
+        border-bottom-left-radius: Brand.radius_xl;
+
+        VerticalLayout {
+            padding-top: 18px;
+            padding-bottom: 22px;
+            padding-left: 18px;
+            padding-right: 18px;
+            spacing: 0px;
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+
+                Rectangle {
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 20px;
+                    background: Brand.ink_raised;
+                    border-width: 2px;
+                    border-color: #FFFFFF;
+                    clip: true;
+
+                    Image {
+                        source: Icon.logo;
+                        width: 40px;
+                        height: 40px;
+                        image-fit: cover;
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    Text {
+                        text: "Lanius";
+                        color: #FFFFFF;
+                        font-size: Theme.typography.size_xl;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: "Kiro as a Model Provider";
+                        color: Brand.stone_500;
+                        font-size: Theme.typography.size_base;
+                        font-weight: 500;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 32px;
+            }
+
+            VerticalLayout {
+                spacing: 8px;
+
+                NavButton {
+                    active: root.current-view == 0;
+                    icon: Icon.dashboard;
+                    label: Tr.dashboard;
+                    clicked => {
+                        root.select-view(0);
+                    }
+                }
+                NavButton {
+                    active: root.current-view == 1;
+                    icon: Icon.sparkles;
+                    label: Tr.supported_models;
+                    clicked => {
+                        root.select-view(1);
+                    }
+                }
+                NavButton {
+                    active: root.current-view == 3;
+                    icon: Icon.list;
+                    label: Tr.tab_logs;
+                    clicked => {
+                        root.select-view(3);
+                    }
+                }
+                NavButton {
+                    active: root.current-view == 2;
+                    icon: Icon.settings;
+                    label: Tr.tab_settings;
+                    clicked => {
+                        root.select-view(2);
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+            }
+
+            Text {
+                text: "v" + root.app-version;
+                color: Brand.stone_500;
+                font-size: Theme.typography.size_base;
+                font-weight: 500;
+                horizontal-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+}
+

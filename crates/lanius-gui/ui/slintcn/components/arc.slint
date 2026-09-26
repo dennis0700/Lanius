@@ -1,0 +1,77 @@
+
+import { Theme } from "../tokens.slint";
+
+export component Arc {
+    in property <float> value: 0.0;
+    in property <angle> start-angle: -135deg;
+    in property <angle> end-angle: 135deg;
+    in property <length> radius: 60px;
+    in property <length> stroke-width: 10px;
+    in property <brush> active-brush: Theme.palette.primary;
+    in property <brush> track-brush: Theme.palette.border;
+
+    width: radius * 2 + stroke-width;
+    height: radius * 2 + stroke-width;
+
+    property <angle> current-angle: start-angle + value * (end-angle - start-angle);
+
+    property <length> center-x: root.width / 2;
+    property <length> center-y: root.height / 2;
+
+    property <length> start-x: center-x + radius * Math.sin(start-angle);
+    property <length> start-y: center-y - radius * Math.cos(start-angle);
+
+    property <length> end-x: center-x + radius * Math.sin(current-angle);
+    property <length> end-y: center-y - radius * Math.cos(current-angle);
+
+    Path {
+        width: 100%;
+        height: 100%;
+        stroke: root.track-brush;
+        stroke-width: root.stroke-width;
+        stroke-line-cap: round;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: root.width / 1px;
+        viewbox-height: root.height / 1px;
+
+        MoveTo {
+            x: root.start-x / 1px;
+            y: root.start-y / 1px;
+        }
+        ArcTo {
+            radius-x: root.radius / 1px;
+            radius-y: root.radius / 1px;
+            x: (root.center-x + radius * Math.sin(root.end-angle)) / 1px;
+            y: (root.center-y - radius * Math.cos(root.end-angle)) / 1px;
+            sweep: true;
+            large-arc: (root.end-angle - root.start-angle) > 180deg;
+        }
+    }
+
+    Path {
+        width: 100%;
+        height: 100%;
+        stroke: root.active-brush;
+        stroke-width: root.stroke-width;
+        stroke-line-cap: round;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: root.width / 1px;
+        viewbox-height: root.height / 1px;
+
+        MoveTo {
+            x: root.start-x / 1px;
+            y: root.start-y / 1px;
+        }
+        ArcTo {
+            radius-x: root.radius / 1px;
+            radius-y: root.radius / 1px;
+            x: root.end-x / 1px;
+            y: root.end-y / 1px;
+            sweep: true;
+            large-arc: (root.current-angle - root.start-angle) > 180deg;
+        }
+    }
+}
+

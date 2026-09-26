@@ -1,0 +1,139 @@
+
+export struct PaletteData {
+    background: color,
+    surface: color,
+    surface_raised: color,
+    text_primary: color,
+    text_secondary: color,
+    text_disabled: color,
+    primary: color,
+    on_primary: color,
+    success: color,
+    success_bg: color,
+    warning: color,
+    warning_bg: color,
+    critical: color,
+    critical_bg: color,
+    on_status: color,
+    border: color,
+    hover_overlay: color,
+    pressed_overlay: color,
+}
+
+export struct SpacingData {
+    xs: length,
+    sm: length,
+    md: length,
+    lg: length,
+    xl: length,
+}
+
+export struct TypographyData {
+    font_family: string,
+    size_base: length,
+    size_lg: length,
+    size_xl: length,
+    size_2xl: length,
+    size_display: length,
+    body_weight: int,
+}
+
+export struct AnimationData {
+    fast: duration,
+    normal: duration,
+    slow: duration,
+}
+
+export global Brand {
+    in-out property <string> ui_font: "";
+    in-out property <string> mono_font: "monospace";
+
+    out property <color> zinc_950: #09090B;
+    out property <color> zinc_900: #18181B;
+    out property <color> zinc_800: #27272A;
+    out property <color> zinc_700: #3F3F46;
+    out property <color> zinc_500: #71717A;
+    out property <color> zinc_400: #A1A1AA;
+    out property <color> zinc_200: #E4E4E7;
+    out property <color> zinc_100: #F4F4F5;
+    out property <color> zinc_50: #FAFAFA;
+    out property <color> white: #FFFFFF;
+
+    out property <color> ink: root.zinc_900;
+    out property <color> ink_soft: root.zinc_800;
+    out property <color> ink_raised: root.zinc_700;
+    out property <color> canvas: root.zinc_50;
+    out property <color> panel: root.zinc_100;
+    out property <color> stone_400: root.zinc_400;
+    out property <color> stone_500: root.zinc_500;
+    out property <color> stone_600: root.zinc_700;
+
+    out property <color> success: #16A34A;
+    out property <color> success_bg: #F0FDF4;
+    out property <color> success_ink: #15803D;
+    out property <color> warning: #D97706;
+    out property <color> warning_bg: #FFFBEB;
+    out property <color> warning_ink: #B45309;
+    out property <color> destructive: #DC2626;
+    out property <color> destructive_bg: #FEF2F2;
+    out property <color> destructive_ink: #B91C1C;
+
+    out property <color> terminal_bg: #18181B;
+    out property <color> terminal_chrome: #09090B;
+
+    out property <length> radius_xl: 16px;
+    out property <length> radius_lg: 12px;
+    out property <length> radius_md: 10px;
+    out property <length> radius_sm: 8px;
+}
+
+export global Theme {
+    in-out property <bool> is_dark: false;
+    in-out property <bool> enable_high_fidelity: true;
+
+    out property <PaletteData> palette: {
+        background: root.is_dark ? Brand.zinc_950 : Brand.zinc_50,
+        surface: root.is_dark ? Brand.zinc_900 : #FFFFFF,
+        surface_raised: root.is_dark ? Brand.zinc_800 : Brand.zinc_100,
+        text_primary: root.is_dark ? #FAFAFA : Brand.zinc_900,
+        text_secondary: root.is_dark ? Brand.zinc_400 : Brand.zinc_500,
+        text_disabled: root.is_dark ? Brand.zinc_700 : Brand.zinc_400,
+        primary: root.is_dark ? #FAFAFA : Brand.zinc_900,
+        on_primary: root.is_dark ? Brand.zinc_900 : #FFFFFF,
+        success: Brand.success,
+        success_bg: root.is_dark ? rgba(22, 163, 74, 0.16) : Brand.success_bg,
+        warning: Brand.warning,
+        warning_bg: root.is_dark ? rgba(217, 119, 6, 0.16) : Brand.warning_bg,
+        critical: Brand.destructive,
+        critical_bg: root.is_dark ? rgba(220, 38, 38, 0.16) : Brand.destructive_bg,
+        on_status: root.is_dark ? #FAFAFA : Brand.zinc_900,
+        border: root.is_dark ? Brand.zinc_700 : Brand.zinc_200,
+        hover_overlay: root.is_dark ? rgba(255, 255, 255, 0.08) : rgba(0, 0, 0, 0.04),
+        pressed_overlay: root.is_dark ? rgba(255, 255, 255, 0.12) : rgba(0, 0, 0, 0.12),
+    };
+
+    out property <SpacingData> spacing: {
+        xs: 4px,
+        sm: 8px,
+        md: 16px,
+        lg: 24px,
+        xl: 32px,
+    };
+
+    out property <TypographyData> typography: {
+        font_family: Brand.ui_font,
+        size_base: 13px,
+        size_lg: 16px,
+        size_xl: 18px,
+        size_2xl: 24px,
+        size_display: 42px,
+        body_weight: 400,
+    };
+
+    in-out property <AnimationData> animation: {
+        fast: 150ms,
+        normal: 250ms,
+        slow: 400ms,
+    };
+}
+

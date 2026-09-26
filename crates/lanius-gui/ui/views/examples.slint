@@ -1,0 +1,170 @@
+
+import { Theme, Brand } from "../slintcn/tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Icon } from "../icons.slint";
+import { Tr } from "../generated/tr.slint";
+import { Panel } from "common.slint";
+
+export component ApiExamplesView {
+    in property <string> code;
+    in property <bool> copied;
+    in-out property <int> api-type: 0;
+    in-out property <int> code-type: 0;
+
+    callback example-changed(int, int);
+    callback copy-code();
+
+    Panel {
+        VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+
+            HorizontalLayout {
+                alignment: space-between;
+                vertical-stretch: 0;
+
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: Tr.api_examples;
+                        color: Theme.palette.text_primary;
+                        font-size: Theme.typography.size_lg;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    width: 180px;
+                    height: 32px;
+                    border-radius: 16px;
+                    background: Brand.zinc_100;
+
+                    HorizontalLayout {
+                        padding: 3px;
+                        spacing: 2px;
+
+                        for name[index] in ["OpenAI", "Anthropic"]: Rectangle {
+                            border-radius: 13px;
+                            background: root.api-type == index ? Theme.palette.surface : transparent;
+                            Text {
+                                text: name;
+                                color: root.api-type == index ? Theme.palette.text_primary : Brand.stone_500;
+                                font-size: Theme.typography.size_base;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.api-type = index;
+                                    root.example-changed(index, root.code-type);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: space-between;
+                vertical-stretch: 0;
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+
+                    for label[index] in ["cURL", "Python", "TypeScript"]: Rectangle {
+                        width: 92px;
+                        height: 30px;
+                        border-radius: 8px;
+                        background: root.code-type == index ? Brand.zinc_900 : Brand.zinc_100;
+                        Text {
+                            text: label;
+                            color: root.code-type == index ? #FFFFFF : Brand.stone_600;
+                            font-size: Theme.typography.size_base;
+                            font-weight: 500;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.code-type = index;
+                                root.example-changed(root.api-type, index);
+                            }
+                        }
+                    }
+                }
+
+                copy-button := Rectangle {
+                    width: copy-row.preferred-width;
+                    height: 28px;
+                    border-radius: 8px;
+                    background: copy-touch.has-hover ? Brand.zinc_100 : transparent;
+
+                    copy-row := HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        alignment: center;
+
+                        VerticalLayout {
+                            alignment: center;
+                            width: 13px;
+                            Image {
+                                source: root.copied ? Icon.check : Icon.copy;
+                                width: 13px;
+                                height: 13px;
+                                colorize: root.copied ? Brand.success : Brand.stone_500;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: root.copied ? Tr.copied : Tr.copy;
+                                color: root.copied ? Brand.success : Brand.stone_500;
+                                font-size: Theme.typography.size_base;
+                            }
+                        }
+                    }
+
+                    copy-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.copy-code();
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                border-radius: Brand.radius_sm;
+                background: Brand.terminal_bg;
+                min-height: 220px;
+                clip: true;
+
+                ScrollView {
+                    x: 0;
+                    y: 0;
+                    width: 100%;
+                    height: 100%;
+
+                    Text {
+                        x: 18px;
+                        y: 16px;
+                        text: root.code;
+                        color: Brand.zinc_200;
+                        font-size: Theme.typography.size_base;
+                        font-family: Brand.mono_font;
+                        line-height-factor: 1.2;
+                        wrap: no-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
+

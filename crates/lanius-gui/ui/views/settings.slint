@@ -1,0 +1,408 @@
+
+import { Theme, Brand } from "../slintcn/tokens.slint";
+import { Switch } from "../slintcn/components/switch.slint";
+import { Select } from "../slintcn/components/select.slint";
+import { HintState, HintDot } from "../slintcn/components/tooltip.slint";
+import { Icon } from "../icons.slint";
+import { Tr } from "../generated/tr.slint";
+import { ConfigForm } from "../types.slint";
+import { Panel, Inset, SettingRow, TextField, IconButton } from "common.slint";
+
+component AuthOption {
+    in property <bool> selected;
+    in property <image> icon;
+    in property <string> label;
+    in property <string> hint;
+
+    callback clicked();
+
+    height: 92px;
+
+    Rectangle {
+        border-radius: Brand.radius_md;
+        background: root.selected ? Brand.ink : Brand.panel;
+        border-width: 2px;
+        border-color: root.selected ? Brand.ink : (touch.has-hover ? rgba(0, 0, 0, 0.1) : transparent);
+
+        animate background { duration: Theme.animation.fast; }
+        animate border-color { duration: Theme.animation.fast; }
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                alignment: space-between;
+                Image {
+                    source: root.icon;
+                    width: 22px;
+                    height: 22px;
+                    colorize: root.selected ? #FFFFFF : Brand.stone_400;
+                }
+                if root.selected: Rectangle {
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    background: #FFFFFF;
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Brand.ink;
+                    }
+                }
+            }
+
+            Text {
+                text: root.label;
+                color: root.selected ? #FFFFFF : Brand.stone_500;
+                font-size: Theme.typography.size_base;
+                font-weight: 600;
+                wrap: word-wrap;
+                vertical-alignment: bottom;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+        changed has-hover => {
+            if (self.has-hover) {
+                root.push-hint();
+            } else {
+                HintState.hide(root.hint);
+            }
+        }
+    }
+
+    function push-hint() {
+        // Match the card's width so the bubble lines up with it exactly.
+        HintState.show(root.hint, root.absolute-position.x, root.absolute-position.y, root.width, root.height, root.width);
+    }
+}
+
+export component SettingsView {
+    in-out property <ConfigForm> form;
+    in property <[string]> detected-cli-dbs;
+    in property <[string]> detected-creds-files;
+    in property <[string]> languages;
+    in property <int> language-index;
+
+    callback form-changed();
+    callback generate-key();
+    callback copy-key();
+    callback select-language(int);
+
+    property <bool> show-key: false;
+    in property <bool> key-copied: false;
+
+    // Hints anchor to a snapshot of the hovered control's position, so drop an
+    // open hint as soon as the page scrolls underneath the cursor. Declared
+    // first (behind everything) and rejecting the event so the surrounding
+    // ScrollView still scrolls and every control keeps its own input.
+    TouchArea {
+        width: content.width;
+        height: content.height;
+        mouse-cursor: default;
+        scroll-event(event) => {
+            HintState.dismiss();
+            return EventResult.reject;
+        }
+    }
+
+    content := HorizontalLayout {
+        spacing: 24px;
+
+        Panel {
+            horizontal-stretch: 2;
+
+            VerticalLayout {
+                padding: 28px;
+                spacing: 26px;
+
+                HorizontalLayout {
+                    spacing: 12px;
+
+                    AuthOption {
+                        selected: root.form.auth_method == "cli_db";
+                        icon: Icon.database;
+                        label: Tr.auth_cli_db;
+                        hint: Tr.tooltip_auth_cli_db;
+                        clicked => {
+                            root.form.auth_method = "cli_db";
+                            root.form-changed();
+                        }
+                    }
+                    AuthOption {
+                        selected: root.form.auth_method == "creds_file";
+                        icon: Icon.file;
+                        label: Tr.auth_creds_file;
+                        hint: Tr.tooltip_auth_creds_file;
+                        clicked => {
+                            root.form.auth_method = "creds_file";
+                            root.form-changed();
+                        }
+                    }
+                    AuthOption {
+                        selected: root.form.auth_method == "refresh_token";
+                        icon: Icon.key;
+                        label: Tr.auth_refresh_token;
+                        hint: Tr.tooltip_auth_refresh_token;
+                        clicked => {
+                            root.form.auth_method = "refresh_token";
+                            root.form-changed();
+                        }
+                    }
+                }
+
+                Inset {
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 10px;
+
+                        if root.form.auth_method == "cli_db": Text {
+                            text: Tr.sqlite_database_path;
+                            color: Theme.palette.text_primary;
+                            font-size: Theme.typography.size_base;
+                            font-weight: 600;
+                        }
+                        if root.form.auth_method == "cli_db": TextField {
+                            text: root.form.cli_db_file;
+                            placeholder: root.detected-cli-dbs.length > 0 ? root.detected-cli-dbs[0] : "~/.local/share/kiro-cli/data.sqlite3";
+                            edited(value) => {
+                                root.form.cli_db_file = value;
+                                root.form-changed();
+                            }
+                        }
+
+                        if root.form.auth_method == "creds_file": Text {
+                            text: Tr.credentials_file_path;
+                            color: Theme.palette.text_primary;
+                            font-size: Theme.typography.size_base;
+                            font-weight: 600;
+                        }
+                        if root.form.auth_method == "creds_file": TextField {
+                            text: root.form.creds_file;
+                            placeholder: root.detected-creds-files.length > 0 ? root.detected-creds-files[0] : "~/.aws/sso/cache/kiro-auth-token.json";
+                            edited(value) => {
+                                root.form.creds_file = value;
+                                root.form-changed();
+                            }
+                        }
+
+                        if root.form.auth_method == "refresh_token": Text {
+                            text: Tr.refresh_token;
+                            color: Theme.palette.text_primary;
+                            font-size: Theme.typography.size_base;
+                            font-weight: 600;
+                        }
+                        if root.form.auth_method == "refresh_token": TextField {
+                            text: root.form.refresh_token;
+                            placeholder: "ey...";
+                            password: true;
+                            edited(value) => {
+                                root.form.refresh_token = value;
+                                root.form-changed();
+                            }
+                        }
+                    }
+                }
+
+                Inset {
+                    VerticalLayout {
+                        padding: 20px;
+                        HorizontalLayout {
+                            alignment: space-between;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                alignment: start;
+                                VerticalLayout {
+                                    alignment: center;
+                                    width: 18px;
+                                    Image {
+                                        source: Icon.globe;
+                                        width: 18px;
+                                        height: 18px;
+                                        colorize: Brand.stone_400;
+                                    }
+                                }
+                                Text {
+                                    text: Tr.language;
+                                    color: Theme.palette.text_primary;
+                                    font-size: Theme.typography.size_base;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Select {
+                                width: 200px;
+                                height: 38px;
+                                options: root.languages;
+                                selected-index: root.language-index;
+                                selected(index, value) => {
+                                    root.select-language(index);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Inset {
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 20px;
+
+                        SettingRow {
+                            icon: Icon.power;
+                            label: Tr.auto_launch;
+                            description: Tr.auto_launch_desc;
+                            Switch {
+                                checked: root.form.auto_launch;
+                                toggled(value) => {
+                                    root.form.auto_launch = value;
+                                    root.form-changed();
+                                }
+                            }
+                        }
+                        SettingRow {
+                            icon: Icon.play;
+                            label: Tr.auto_start_server;
+                            description: Tr.auto_start_server_desc;
+                            Switch {
+                                checked: root.form.auto_start_server;
+                                toggled(value) => {
+                                    root.form.auto_start_server = value;
+                                    root.form-changed();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Inset {
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Text {
+                                text: Tr.proxy_api_key;
+                                color: Theme.palette.text_primary;
+                                font-size: Theme.typography.size_base;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                HintDot {
+                                    hint: Tr.tooltip_proxy_api_key;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+
+                            TextField {
+                                horizontal-stretch: 1;
+                                text: root.form.proxy_api_key;
+                                placeholder: "sk-...";
+                                password: !root.show-key;
+                                edited(value) => {
+                                    root.form.proxy_api_key = value;
+                                    root.form-changed();
+                                }
+                            }
+
+                            IconButton {
+                                icon: root.show-key ? Icon.eye_off : Icon.eye;
+                                size: 44px;
+                                icon-size: 18px;
+                                hint: root.show-key ? Tr.tooltip_hide_key : Tr.tooltip_show_key;
+                                clicked => {
+                                    root.show-key = !root.show-key;
+                                }
+                            }
+
+                            IconButton {
+                                icon: root.key-copied ? Icon.check : Icon.copy;
+                                tint: root.key-copied ? Brand.success : Brand.stone_400;
+                                size: 44px;
+                                icon-size: 18px;
+                                hint: Tr.tooltip_copy_key;
+                                clicked => {
+                                    root.copy-key();
+                                }
+                            }
+
+                            IconButton {
+                                icon: Icon.shuffle;
+                                size: 44px;
+                                icon-size: 18px;
+                                hint: Tr.tooltip_generate;
+                                clicked => {
+                                    root.generate-key();
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: Tr.clients_include_key;
+                            color: Brand.stone_500;
+                            font-size: Theme.typography.size_base;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                Inset {
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 16px;
+
+                        SettingRow {
+                            icon: Icon.wifi;
+                            label: Tr.enable_lan_access;
+                            description: Tr.lan_access_desc;
+                            Switch {
+                                checked: root.form.lan_access;
+                                toggled(value) => {
+                                    root.form.lan_access = value;
+                                    root.form-changed();
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.palette.border;
+                        }
+
+                        SettingRow {
+                            has-icon: false;
+                            label: Tr.server_port;
+                            description: Tr.server_port_desc;
+                            TextField {
+                                width: 72px;
+                                horizontal-alignment: center;
+                                text: root.form.server_port;
+                                placeholder: "8000";
+                                edited(value) => {
+                                    root.form.server_port = value;
+                                    root.form-changed();
+                                }
+                            }
+                        }
+                    }
+                }
+
+            }
+        }
+    }
+}
+
