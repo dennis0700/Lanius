@@ -1,0 +1,30 @@
+[Unit]
+Description=Lanius gateway (OpenAI/Anthropic-compatible bridge for Kiro)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust to wherever the extracted binary/env file live.
+WorkingDirectory=/opt/lanius
+ExecStart=/opt/lanius/lanius
+EnvironmentFile=/opt/lanius/lanius.env
+Restart=on-failure
+RestartSec=2
+
+# Run as an unprivileged, dedicated service account rather than root.
+# Create it first with: useradd --system --no-create-home --shell /usr/sbin/nologin lanius
+User=lanius
+Group=lanius
+
+# Hardening. Loosen if lanius needs to read credentials/config from paths
+# outside WorkingDirectory (e.g. KIRO_CREDS_FILE / KIRO_CLI_DB_FILE) — add
+# them to ReadWritePaths/ReadOnlyPaths as needed.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/lanius
+
+[Install]
+WantedBy=multi-user.target
