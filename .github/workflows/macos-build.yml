@@ -6,6 +6,9 @@ on:
       - "v*.*.*"
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 env:
   APP_NAME: Lanius
   BIN_NAME: lanius-desktop

@@ -6,6 +6,9 @@ on:
       - "v*.*.*"
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 env:
   BIN_NAME: lanius
 
@@ -14,6 +17,7 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: aarch64-unknown-linux-musl
