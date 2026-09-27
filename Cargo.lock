@@ -3151,7 +3151,7 @@ dependencies = [
 
 [[package]]
 name = "lanius-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3167,7 +3167,7 @@ dependencies = [
 
 [[package]]
 name = "lanius-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "lanius-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "auto-launch",

@@ -31,7 +31,7 @@ fully static musl binary for each version tag. It has no runtime dependencies
 (no glibc, no OpenSSL), so it runs on any distribution.
 
 ```sh
-VERSION=0.1.0   # the release you want, without the leading "v"
+VERSION=0.1.1   # the release you want, without the leading "v"
 case "$(uname -m)" in
   x86_64)        ARCH=amd64 ;;
   aarch64|arm64) ARCH=arm64 ;;

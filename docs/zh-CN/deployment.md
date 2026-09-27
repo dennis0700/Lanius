@@ -30,7 +30,7 @@
 在任意发行版上运行。
 
 ```sh
-VERSION=0.1.0   # 需要的版本号，不带前缀 "v"
+VERSION=0.1.1   # 需要的版本号，不带前缀 "v"
 case "$(uname -m)" in
   x86_64)        ARCH=amd64 ;;
   aarch64|arm64) ARCH=arm64 ;;
