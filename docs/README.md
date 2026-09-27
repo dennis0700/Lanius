@@ -1,3 +1,5 @@
+English | [简体中文](zh-CN/README.md)
+
 # Lanius Technical Documentation
 
 This directory contains implementation-level documentation for Lanius,

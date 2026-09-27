@@ -1,3 +1,5 @@
+English | [简体中文](README.zh-CN.md)
+
 # Lanius
 
 An OpenAI- and Anthropic-compatible API gateway for the Kiro backend
