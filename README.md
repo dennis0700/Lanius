@@ -104,6 +104,12 @@ The gateway exposes:
 All routes other than `/health` require the `PROXY_API_KEY` bearer token, and
 CORS is restricted to `localhost`/`127.0.0.1` origins.
 
+### Deploying on Linux (systemd)
+
+Prebuilt static Linux binaries (amd64/arm64) are attached to each GitHub
+Release. See [`docs/deployment.md`](docs/deployment.md) for installing
+`lanius` and running it as a hardened systemd service.
+
 ## Testing
 
 ```sh

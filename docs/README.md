@@ -20,6 +20,7 @@ then drill into the topic that matches what you're working on:
 | [model-catalog.md](model-catalog.md) | Model name resolution/normalization and native reasoning/thinking support |
 | [truncation.md](truncation.md) | Detecting and recovering from upstream tool-call/content truncation |
 | [configuration.md](configuration.md) | Every environment variable, its default, and what it controls |
+| [deployment.md](deployment.md) | Installing `lanius-cli` on Linux and running it as a systemd service |
 | [gui.md](gui.md) | `lanius-gui` desktop app architecture (Slint UI, controller, embedded gateway) |
 | [testing.md](testing.md) | How the test suite is organized and how to run/extend it |
 

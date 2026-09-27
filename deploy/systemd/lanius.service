@@ -11,6 +11,10 @@ ExecStart=/opt/lanius/lanius
 EnvironmentFile=/opt/lanius/lanius.env
 Restart=on-failure
 RestartSec=2
+# lanius shuts down gracefully on SIGINT (Ctrl-C); systemd sends SIGTERM by
+# default, which would terminate it without draining in-flight requests.
+KillSignal=SIGINT
+TimeoutStopSec=30
 
 # Run as an unprivileged, dedicated service account rather than root.
 # Create it first with: useradd --system --no-create-home --shell /usr/sbin/nologin lanius

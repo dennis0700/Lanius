@@ -97,6 +97,12 @@ lanius help
 除 `/health` 外的所有路由都需要 `PROXY_API_KEY` bearer token，且 CORS 仅允许
 `localhost`/`127.0.0.1` 来源。
 
+### 在 Linux 上部署（systemd）
+
+每个 GitHub Release 都附带预构建的静态 Linux 二进制（amd64/arm64）。安装 `lanius`
+并将其作为加固的 systemd 服务运行，请参阅
+[`docs/zh-CN/deployment.md`](docs/zh-CN/deployment.md)。
+
 ## 测试
 
 ```sh

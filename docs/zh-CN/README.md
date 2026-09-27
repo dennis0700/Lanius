@@ -19,6 +19,7 @@ lanius-core`）的补充，从更高的层面说明各部分如何协同工作�
 | [model-catalog.md](model-catalog.md) | 模型名称解析/规范化，以及原生 reasoning/thinking 支持 |
 | [truncation.md](truncation.md) | 检测并恢复上游 tool call/内容截断 |
 | [configuration.md](configuration.md) | 所有环境变量、默认值及其作用 |
+| [deployment.md](deployment.md) | 在 Linux 上安装 `lanius-cli` 并以 systemd 服务运行 |
 | [gui.md](gui.md) | `lanius-gui` 桌面应用架构（Slint UI、控制器、内嵌网关） |
 | [testing.md](testing.md) | 测试套件的组织方式，以及如何运行和扩展测试 |
 
