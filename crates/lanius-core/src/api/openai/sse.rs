@@ -186,7 +186,31 @@ where
         futures_util::pin_mut!(events);
 
         while let Some(event) = events.next().await {
-            match event? {
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    // A mid-stream upstream failure (read timeout, connection
+                    // reset, ...). Surface it as an OpenAI-style error frame
+                    // instead of silently ending the stream, which clients
+                    // report as "stream ended without finish_reason".
+                    tracing::warn!(error = %error, "upstream stream failed mid-response");
+                    let trailing_content = context
+                        .tool_name_aliases
+                        .restore_text_fragment(&mut alias_text_pending, "", true);
+                    if !trailing_content.is_empty() {
+                        let mut delta = Map::new();
+                        delta.insert("content".to_string(), Value::String(trailing_content));
+                        if first_chunk {
+                            delta.insert("role".to_string(), Value::String("assistant".to_string()));
+                        }
+                        yield frame(chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
+                    }
+                    yield frame(error_value(&error));
+                    yield "data: [DONE]\n\n".to_string();
+                    return;
+                }
+            };
+            match event {
                 KiroEvent { event_type: KiroEventType::Content, content: Some(content), .. } if !content.is_empty() => {
                     full_content.push_str(&content);
                     let mut delta = Map::new();
@@ -429,6 +453,19 @@ fn chunk_value(
         value["usage"] = usage;
     }
     value
+}
+
+/// Builds an OpenAI-style mid-stream error payload
+/// (`{"error": {"message", "type", "code"}}`), using the error's
+/// user-safe message.
+fn error_value(error: &crate::error::GatewayError) -> Value {
+    json!({
+        "error": {
+            "message": error.user_message(),
+            "type": "kiro_stream_error",
+            "code": error.http_status(),
+        }
+    })
 }
 
 /// Formats a JSON value as a `data: ...\n\n` SSE frame using spaced JSON
@@ -691,6 +728,26 @@ mod tests {
             .expect("collect response");
         assert_eq!(response["choices"][0]["message"]["content"], "hello");
         assert_eq!(response["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[tokio::test]
+    async fn mid_stream_error_emits_error_frame_before_done() {
+        let output = frames(vec![
+            Ok(KiroEvent::content("partial")),
+            Err(crate::error::GatewayError::StreamReadTimeout(
+                Duration::from_secs(1),
+            )),
+        ])
+        .await;
+        assert_eq!(output.len(), 3);
+        assert_eq!(
+            json_frame(&output[0])["choices"][0]["delta"]["content"],
+            "partial"
+        );
+        let error = json_frame(&output[1]);
+        assert_eq!(error["error"]["code"], 504);
+        assert!(error["error"]["message"].is_string());
+        assert_eq!(output[2], "data: [DONE]\n\n");
     }
 
     #[test]

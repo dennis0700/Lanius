@@ -28,6 +28,7 @@ use std::sync::Arc;
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
 
+use crate::api::anthropic::sse::DEFAULT_PING_INTERVAL;
 use crate::api::openai::models::{
     ChatCompletionRequest, ChatMessage, ModelList, OpenAIMessageContent, OpenAIModel, Tool,
     ToolFunction,
@@ -399,12 +400,24 @@ fn streaming_response(
     let frames = encode_openai_sse(events, context);
     let body_stream = async_stream::stream! {
         futures_util::pin_mut!(frames);
-        while let Some(frame) = frames.next().await {
-            match frame {
-                Ok(frame) => yield Ok::<_, std::convert::Infallible>(bytes::Bytes::from(frame)),
-                Err(_error) => {
-                    yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
-                    break;
+        // SSE comment heartbeats keep idle connections alive while the
+        // upstream is still generating (e.g. tool calls, which are only
+        // emitted once complete). Clients ignore comment lines.
+        let mut pings = tokio::time::interval(DEFAULT_PING_INTERVAL);
+        pings.tick().await;
+        loop {
+            tokio::select! {
+                _ = pings.tick() => {
+                    yield Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(b": keepalive\n\n"));
+                }
+                frame = frames.next() => match frame {
+                    Some(Ok(frame)) => yield Ok(bytes::Bytes::from(frame)),
+                    Some(Err(error)) => {
+                        tracing::warn!(error = %error, "OpenAI SSE encoder failed");
+                        yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
+                        break;
+                    }
+                    None => break,
                 }
             }
         }
@@ -414,6 +427,9 @@ fn streaming_response(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/event-stream"),
     );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
 }
 
