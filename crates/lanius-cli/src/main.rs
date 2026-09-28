@@ -3,10 +3,10 @@
 //! This binary wraps [`lanius_core`], the crate that implements the actual HTTP
 //! gateway (OpenAI/Anthropic-compatible routes, upstream Kiro client, streaming
 //! parser, auth/account management, etc.). `lanius-cli` itself contains no
-//! protocol or business logic — it only parses `argv`, wires up a Tokio
-//! runtime, and delegates to `lanius_core` APIs.
+//! protocol or business logic — it only parses `argv` (via [`clap`]), wires up
+//! a Tokio runtime, and delegates to `lanius_core` APIs.
 //!
-//! Supported subcommands (see [`print_usage`] for the exact help text):
+//! Supported subcommands (see [`Cli`] for the exact flags/args):
 //! - *(no subcommand)* — validate the config and run the gateway in server
 //!   mode ([`serve`]), listening until a `Ctrl-C` / SIGINT is received.
 //! - `replay <raw-stream-file>` — offline-decode a previously captured raw
@@ -15,57 +15,113 @@
 //! - `probe [prompt] [--capture <file>]` — perform a live end-to-end request
 //!   against the real Kiro backend (see [`probe`]), optionally writing the raw
 //!   response bytes to disk so they can later be fed back into `replay`.
-//! - `help` / `--help` / `-h` — print usage and exit successfully.
 //!
-//! Any other/unknown subcommand causes the process to print usage to stderr
-//! and exit with status code `2`.
+//! `--help`/`-h` and `--version`/`-V` (plus the `help` subcommand) are
+//! provided automatically by `clap` and exit the process directly (status
+//! `0` on success, status `2` on a usage error such as an unknown
+//! subcommand).
+//!
+//! Tip: capture a `replay` fixture with
+//! `lanius probe --capture debug_logs/raw.bin`, then prove the parser is
+//! byte-boundary agnostic by replaying it with different chunk sizes:
+//! `for n in 1 7 64 100000; do REPLAY_CHUNK_SIZE=$n lanius replay <file> | md5; done`.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use futures_util::StreamExt;
 use lanius_core::Config;
 use lanius_core::auth::AuthManager;
 use lanius_core::upstream::{KiroEvent, KiroEventType, KiroHttpClient, parse_kiro_stream};
 
-/// Process entry point: parses `argv`, dispatches to the requested
-/// subcommand, and returns any error up to the process exit path (a non-`Ok`
-/// return causes `anyhow`/the default Rust runtime to print the error and
-/// exit with a non-zero status).
+/// Top-level CLI definition, parsed from `argv` by [`clap`].
+///
+/// `version`/`about` are left unset here (note the explicit `long_about =
+/// None`, which stops `clap` from falling back to this doc comment) and
+/// injected at runtime in [`Cli::parse_from_env`] from
+/// `lanius_core::config::{APP_VERSION, APP_DESCRIPTION}` — `clap`'s
+/// `#[command(version = ...)]` attribute only accepts string literals, but
+/// these values must stay in sync with [`print_banner`] and the HTTP
+/// `/health` endpoint, so they can't be hardcoded here.
+#[derive(Parser)]
+#[command(name = "Lanius", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+impl Cli {
+    /// Parses `argv` the same way [`Parser::parse`] would, except `version`
+    /// and `about` are overridden to `lanius_core::config::APP_VERSION` /
+    /// `APP_DESCRIPTION` so `--version`/`--help` output can never drift from
+    /// the version/description reported elsewhere in the app.
+    fn parse_from_env() -> Self {
+        // `Command::version` requires a `&'static str`; a `static
+        // OnceLock<String>` lets us compute the `"v{APP_VERSION}"` string
+        // once at startup and borrow it for `'static` without `unsafe` or
+        // leaking memory on every call.
+        static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let version = VERSION.get_or_init(|| format!("v{}", lanius_core::config::APP_VERSION));
+
+        let command = Cli::command()
+            .version(version.as_str())
+            .about(lanius_core::config::APP_DESCRIPTION);
+        let matches = command.get_matches();
+        // `Cli::command()` above is built from the same `#[derive(Parser)]`
+        // definition as `Cli`, so `from_arg_matches` succeeding is an
+        // invariant of the derive machinery, not user input; a mismatch
+        // here would be a programming error in this function, not a
+        // reachable runtime failure.
+        Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+    }
+}
+
+/// Subcommands accepted by `lanius-cli`. See the module docs for a summary
+/// of each; omitting a subcommand runs the gateway in server mode.
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Decode a previously captured raw upstream byte stream offline
+    Replay {
+        /// Path to a raw-stream file (as produced by `probe --capture`)
+        file: PathBuf,
+    },
+    /// Perform a live end-to-end request against the real Kiro backend
+    Probe {
+        /// User message to send as the sole turn of a new conversation
+        #[arg(default_value = "Hello")]
+        prompt: String,
+        /// Write the raw upstream response bytes to this file, for later `replay`
+        #[arg(long)]
+        capture: Option<PathBuf>,
+    },
+}
+
+/// Process entry point: parses `argv` via [`Cli::parse`], dispatches to the
+/// requested subcommand, and returns any error up to the process exit path
+/// (a non-`Ok` return causes `anyhow`/the default Rust runtime to print the
+/// error and exit with a non-zero status).
 ///
 /// Side effects:
 /// - Loads a local `.env` file via `dotenvy` (ignored if absent).
 /// - Builds the [`Config`] from environment variables.
 /// - Initializes the global `tracing` subscriber.
-/// - For the unknown-subcommand case, calls [`std::process::exit`] directly
-///   with status code `2` (bypassing the normal `Result` return path).
+/// - `clap` calls [`std::process::exit`] directly for `--help`/`--version`
+///   (status `0`) and for usage errors such as an unknown subcommand
+///   (status `2`), bypassing the normal `Result` return path.
 fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
 
     let config = Config::from_env();
     init_tracing(&config.log_level);
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
-        Some("replay") => {
-            let path = args
-                .get(1)
-                .context("usage: lanius replay <raw-stream-file>")?;
-            runtime()?.block_on(replay(path))
-        }
-        Some("probe") => {
-            let (capture, prompt) = parse_probe_args(&args[1..])?;
+    let cli = Cli::parse_from_env();
+    match cli.command {
+        Some(Command::Replay { file }) => runtime()?.block_on(replay(&file)),
+        Some(Command::Probe { prompt, capture }) => {
             runtime()?.block_on(probe(config, prompt, capture))
-        }
-        Some("help" | "--help" | "-h") => {
-            print_usage();
-            Ok(())
-        }
-        Some(other) => {
-            eprintln!("unknown subcommand: {other}\n");
-            print_usage();
-            std::process::exit(2);
         }
         None => {
             config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -121,9 +177,10 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 /// summary to stdout.
 ///
 /// Errors if the file cannot be read or if the stream fails to parse.
-async fn replay(path: &str) -> Result<()> {
-    let bytes = std::fs::read(path).with_context(|| format!("failed to read {path}"))?;
-    println!("replaying {} ({} bytes)\n", path, bytes.len());
+async fn replay(path: &Path) -> Result<()> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    println!("replaying {} ({} bytes)\n", path.display(), bytes.len());
 
     // Allow overriding the chunk size via env var so the same fixture can be
     // replayed with different byte-boundary framing (see the framing
@@ -158,37 +215,6 @@ async fn replay(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parses the arguments following the `probe` subcommand.
-///
-/// Accepted forms: `probe [prompt] [--capture <file>]`. The `--capture`
-/// flag consumes the following argument as the capture file path; any other
-/// `--`-prefixed argument is rejected as an unknown option. A bare argument
-/// (not starting with `--`) is treated as the prompt text; if no prompt is
-/// given, defaults to `"Hello"`.
-///
-/// Returns `(capture_path, prompt)` on success, or an error describing usage
-/// if `--capture` is missing its value or an unrecognized flag is passed.
-fn parse_probe_args(args: &[String]) -> Result<(Option<std::path::PathBuf>, String)> {
-    let mut capture = None;
-    let mut prompt = None;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--capture" => {
-                let path = it
-                    .next()
-                    .context("usage: lanius probe [prompt] [--capture <file>]")?;
-                capture = Some(std::path::PathBuf::from(path));
-            }
-            other if other.starts_with("--") => {
-                anyhow::bail!("unknown probe option: {other}");
-            }
-            other => prompt = Some(other.to_string()),
-        }
-    }
-    Ok((capture, prompt.unwrap_or_else(|| "Hello".to_string())))
-}
-
 /// Implements the `probe [prompt] [--capture <file>]` subcommand: performs a
 /// live end-to-end request against the real Kiro backend using the same
 /// [`AuthManager`] / [`KiroHttpClient`] machinery as the gateway itself, then
@@ -214,7 +240,7 @@ fn parse_probe_args(args: &[String]) -> Result<(Option<std::path::PathBuf>, Stri
 /// Errors if config validation fails, auth/token retrieval fails, the
 /// upstream request fails, the response stream fails to parse, or the
 /// capture file cannot be created/written.
-async fn probe(config: Config, prompt: String, capture: Option<std::path::PathBuf>) -> Result<()> {
+async fn probe(config: Config, prompt: String, capture: Option<PathBuf>) -> Result<()> {
     config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let auth = Arc::new(AuthManager::new(config.clone()).map_err(|e| anyhow::anyhow!("{e}"))?);
@@ -432,25 +458,6 @@ fn init_tracing(level: &str) {
     fmt().with_env_filter(filter).with_target(false).init();
 }
 
-/// Prints the CLI usage/help text (subcommands and a framing-independence
-/// testing tip) to stdout. Used both for `help`/`--help`/`-h` and as part of
-/// the error path for unrecognized subcommands.
-fn print_usage() {
-    println!(
-        "{} v{}\n\n\
-         USAGE:\n\
-         \x20 lanius                 validate config and print the banner\n\
-         \x20 lanius replay <file>   decode a captured raw stream offline\n\
-         \x20 lanius probe [prompt] [--capture <file>]\n\
-         \x20                        live end-to-end upstream probe\n\n\
-         Capture a `replay` fixture with `lanius probe --capture debug_logs/raw.bin`, then\n\
-         prove framing independence:\n\
-         \x20 for n in 1 7 64 100000; do REPLAY_CHUNK_SIZE=$n lanius replay <file> | md5; done\n",
-        lanius_core::config::APP_TITLE,
-        lanius_core::config::APP_VERSION,
-    );
-}
-
 /// Prints the startup banner shown when the gateway launches in server mode
 /// (no subcommand given): app name/version, listen address, region, and
 /// debug mode.
@@ -464,4 +471,71 @@ fn print_banner(config: &Config) {
         config.region,
         config.debug_mode,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parsing with no arguments must select server mode (no subcommand),
+    /// which is what routes `main` into `serve` rather than `replay`/`probe`.
+    #[test]
+    fn no_args_selects_server_mode() {
+        let cli = Cli::try_parse_from(["lanius"]).expect("bare invocation must parse");
+        assert!(cli.command.is_none());
+    }
+
+    /// `replay <file>` must capture the file path verbatim, and omitting it
+    /// must be a usage error rather than silently defaulting.
+    #[test]
+    fn replay_requires_file_argument() {
+        let cli =
+            Cli::try_parse_from(["lanius", "replay", "capture.bin"]).expect("must parse");
+        match cli.command {
+            Some(Command::Replay { file }) => assert_eq!(file, PathBuf::from("capture.bin")),
+            other => panic!("expected Replay, got {other:?}"),
+        }
+
+        assert!(
+            Cli::try_parse_from(["lanius", "replay"]).is_err(),
+            "replay with no file must be a usage error"
+        );
+    }
+
+    /// `probe` with no prompt must default to `"Hello"` and no capture path;
+    /// an explicit prompt and `--capture <file>` must both be threaded through.
+    #[test]
+    fn probe_prompt_defaults_and_capture_flag() {
+        let bare = Cli::try_parse_from(["lanius", "probe"]).expect("must parse");
+        match bare.command {
+            Some(Command::Probe { prompt, capture }) => {
+                assert_eq!(prompt, "Hello");
+                assert_eq!(capture, None);
+            }
+            other => panic!("expected Probe, got {other:?}"),
+        }
+
+        let with_args = Cli::try_parse_from([
+            "lanius",
+            "probe",
+            "custom prompt",
+            "--capture",
+            "out.bin",
+        ])
+        .expect("must parse");
+        match with_args.command {
+            Some(Command::Probe { prompt, capture }) => {
+                assert_eq!(prompt, "custom prompt");
+                assert_eq!(capture, Some(PathBuf::from("out.bin")));
+            }
+            other => panic!("expected Probe, got {other:?}"),
+        }
+    }
+
+    /// An unrecognized subcommand must be rejected as a usage error, matching
+    /// the `main` dispatch path that exits with status `2`.
+    #[test]
+    fn unknown_subcommand_is_rejected() {
+        assert!(Cli::try_parse_from(["lanius", "bogus"]).is_err());
+    }
 }

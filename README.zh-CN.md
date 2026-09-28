@@ -71,6 +71,7 @@ lanius                          # 校验配置并开始提供服务
 lanius probe [prompt]           # 向线上 Kiro 后端发起一次端到端请求
 lanius probe --capture out.bin  # 同上，并将原始上游数据流保存到文件
 lanius replay out.bin           # 离线解码之前捕获的原始数据流
+lanius --version                # 打印版本号并退出
 lanius help
 ```
 

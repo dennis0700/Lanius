@@ -77,6 +77,7 @@ lanius                          # validate config and start serving
 lanius probe [prompt]           # live end-to-end request against the Kiro backend
 lanius probe --capture out.bin  # same, saving the raw upstream stream to a file
 lanius replay out.bin           # offline-decode a previously captured raw stream
+lanius --version                # print the version and exit
 lanius help
 ```
 
