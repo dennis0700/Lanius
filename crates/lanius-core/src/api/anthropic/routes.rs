@@ -330,18 +330,9 @@ async fn preflight_upstream(
     payload: Value,
 ) -> Result<futures_util::stream::BoxStream<'static, std::result::Result<Bytes, reqwest::Error>>> {
     let tries = config.first_token_max_retries.max(1);
-    let url = auth.api_host().await + "/generateAssistantResponse";
     for attempt in 0..tries {
         let client = KiroHttpClient::new(auth.clone(), config)?;
-        let response = client
-            .request_with_retry(
-                reqwest::Method::POST,
-                &url,
-                Some(payload.clone()),
-                None,
-                true,
-            )
-            .await?;
+        let response = client.chat_request_with_retry(&payload, true).await?;
         let mut source = response.bytes_stream().boxed();
         match tokio::time::timeout(config.first_token_timeout, source.next()).await {
             Ok(Some(Ok(first))) => {

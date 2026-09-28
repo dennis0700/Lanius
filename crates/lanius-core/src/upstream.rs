@@ -11,6 +11,7 @@
 //! responses.
 
 pub(crate) mod client;
+pub(crate) mod endpoint;
 pub(crate) mod parser;
 pub(crate) mod stream;
 

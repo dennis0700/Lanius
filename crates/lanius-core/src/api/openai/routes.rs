@@ -280,18 +280,14 @@ async fn prepare_openai_request(
         &mut tool_name_aliases,
     )?
     .payload;
-    let url = format!(
-        "{}/generateAssistantResponse",
-        state.auth_manager.api_host().await
-    );
     let upstream = if request.stream {
-        preflight_openai_stream(state.auth_manager.clone(), &state.config, url, payload)
+        preflight_openai_stream(state.auth_manager.clone(), &state.config, payload)
             .await
             .map(OpenAiUpstream::Stream)?
     } else {
         let client = KiroHttpClient::new(state.auth_manager.clone(), &state.config)?;
         client
-            .request_with_retry(reqwest::Method::POST, &url, Some(payload), None, true)
+            .chat_request_with_retry(&payload, true)
             .await
             .map(OpenAiUpstream::Response)?
     };
@@ -308,7 +304,6 @@ async fn prepare_openai_request(
 async fn preflight_openai_stream(
     auth_manager: std::sync::Arc<crate::auth::AuthManager>,
     config: &Config,
-    url: String,
     payload: Value,
 ) -> crate::error::Result<
     futures_util::stream::BoxStream<'static, std::result::Result<bytes::Bytes, reqwest::Error>>,
@@ -319,13 +314,10 @@ async fn preflight_openai_stream(
         move || {
             let auth_manager = auth_manager.clone();
             let config = config.clone();
-            let url = url.clone();
             let payload = payload.clone();
             async move {
                 let client = KiroHttpClient::new(auth_manager, &config)?;
-                let response = client
-                    .request_with_retry(reqwest::Method::POST, &url, Some(payload), None, true)
-                    .await?;
+                let response = client.chat_request_with_retry(&payload, true).await?;
                 Ok(response.bytes_stream().boxed())
             }
         },

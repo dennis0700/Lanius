@@ -17,10 +17,19 @@ use std::time::Duration;
 use reqwest::{Method, Response, StatusCode};
 use serde_json::Value;
 
+use super::endpoint::{
+    ChatEndpoint, EndpointThrottle, GLOBAL_THROTTLE, THROTTLE_DURATION, chat_endpoints,
+};
 use crate::auth::AuthManager;
 use crate::config::{BASE_RETRY_DELAY, Config, MAX_RETRIES};
 use crate::error::{GatewayError, Result, classify_network_error, enhance_kiro_error};
 use crate::utils::kiro_headers;
+
+#[derive(Clone, Copy)]
+enum Target<'a> {
+    Fixed(&'a str),
+    Chat(&'a [ChatEndpoint], &'a EndpointThrottle),
+}
 
 // Total request timeout for non-streaming calls; streaming calls
 // deliberately have no total timeout (see `client_timeouts`) since a
@@ -159,6 +168,42 @@ impl KiroHttpClient {
             .await
     }
 
+    /// Sends a `generateAssistantResponse` request, rotating across the chat
+    /// endpoints from [`chat_endpoints`]. A `429` parks the endpoint that
+    /// returned it (see [`GLOBAL_THROTTLE`]) and the request moves straight to
+    /// the next free endpoint without consuming a retry; only when every
+    /// endpoint is parked does it fall back to exponential backoff. Other
+    /// statuses follow [`request_bytes_with_retry`](Self::request_bytes_with_retry).
+    pub async fn chat_request_with_retry(&self, payload: &Value, stream: bool) -> Result<Response> {
+        let region = self.auth_manager.region().await;
+        let has_profile = self
+            .auth_manager
+            .profile_arn()
+            .await
+            .is_some_and(|arn| !arn.is_empty());
+        let endpoints = chat_endpoints(&region, has_profile);
+        self.chat_request_to(&endpoints, payload, stream, &GLOBAL_THROTTLE)
+            .await
+    }
+
+    async fn chat_request_to(
+        &self,
+        endpoints: &[ChatEndpoint],
+        payload: &Value,
+        stream: bool,
+        throttle: &EndpointThrottle,
+    ) -> Result<Response> {
+        let body = serde_json::to_vec(payload)?;
+        self.send_with_retry(
+            Method::POST,
+            Target::Chat(endpoints, throttle),
+            Some(body),
+            None,
+            stream,
+        )
+        .await
+    }
+
     /// Sends a raw-body request to `url`, retrying up to
     /// [`max_retries`](Self::max_retries) times.
     ///
@@ -207,11 +252,37 @@ impl KiroHttpClient {
         params: Option<Vec<(String, String)>>,
         stream: bool,
     ) -> Result<Response> {
+        self.send_with_retry(method, Target::Fixed(url), body, params, stream)
+            .await
+    }
+
+    async fn send_with_retry(
+        &self,
+        method: Method,
+        target: Target<'_>,
+        body: Option<Vec<u8>>,
+        params: Option<Vec<(String, String)>>,
+        stream: bool,
+    ) -> Result<Response> {
         let mut last_network_error: Option<GatewayError> = None;
         let mut last_upstream: Option<(StatusCode, String)> = None;
 
         let max_retries = self.max_retries(stream);
-        for attempt in 0..max_retries {
+        let mut attempt = 0;
+        let mut free_switches = 0;
+        while attempt < max_retries {
+            // When every chat endpoint is parked, fall back to the preferred one;
+            // the 429 branch below then backs off as the non-rotating path would.
+            let chat_endpoint = match target {
+                Target::Fixed(_) => None,
+                Target::Chat(endpoints, throttle) => {
+                    Some(&endpoints[throttle.pick(endpoints).unwrap_or(0)])
+                }
+            };
+            let url = match (target, chat_endpoint) {
+                (Target::Fixed(url), _) => url,
+                (Target::Chat(..), endpoint) => endpoint.map_or("", |e| e.url.as_str()),
+            };
             let token = self.auth_manager.access_token_and_autofetch().await?;
             let http_client = if stream {
                 &self.streaming_client
@@ -224,6 +295,12 @@ impl KiroHttpClient {
                 if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
                     headers.insert(name, value);
                 }
+            }
+            if let Some(endpoint) = chat_endpoint {
+                headers.insert(
+                    "x-amz-target",
+                    reqwest::header::HeaderValue::from_static(endpoint.amz_target),
+                );
             }
             if stream {
                 headers.insert(
@@ -257,6 +334,24 @@ impl KiroHttpClient {
                     let status = response.status();
                     let error_body = response.text().await.unwrap_or_default();
                     last_upstream = Some((status, error_body));
+                    if let (Target::Chat(endpoints, throttle), Some(endpoint)) =
+                        (target, chat_endpoint)
+                    {
+                        if status == StatusCode::TOO_MANY_REQUESTS {
+                            throttle.throttle(endpoint.kind, THROTTLE_DURATION);
+                            // Switching to a free endpoint is immediate and does
+                            // not use up a retry; bounded by the endpoint count.
+                            if free_switches < endpoints.len() && throttle.pick(endpoints).is_some()
+                            {
+                                free_switches += 1;
+                                tracing::warn!(
+                                    endpoint = endpoint.kind.as_str(),
+                                    "chat endpoint rate-limited; switching endpoint"
+                                );
+                                continue;
+                            }
+                        }
+                    }
                     tokio::time::sleep(retry_delay(attempt)).await;
                 }
                 Ok(response) => return Err(upstream_error(response).await),
@@ -280,6 +375,7 @@ impl KiroHttpClient {
                     tokio::time::sleep(retry_delay(attempt)).await;
                 }
             }
+            attempt += 1;
         }
 
         if let Some((status, body)) = last_upstream {
@@ -381,6 +477,7 @@ fn upstream_error_from_body(status: StatusCode, body: &str) -> GatewayError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::upstream::endpoint::ChatEndpointKind;
 
     #[test]
     fn streaming_uses_configured_first_token_retry_limit() {
@@ -444,6 +541,133 @@ mod tests {
             }
             other => panic!("expected upstream error, got {other:?}"),
         }
+    }
+
+    // Serves `responses.len()` HTTP requests, answering each with the next
+    // status, and records the request paths plus their `x-amz-target`.
+    async fn scripted_server(
+        responses: Vec<&'static str>,
+    ) -> (String, Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            for status in responses {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0_u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                let target = request
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .starts_with("x-amz-target:")
+                            .then(|| line[13..].trim().to_string())
+                    })
+                    .unwrap_or_default();
+                log.lock().unwrap().push((path, target));
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        });
+        (base, seen)
+    }
+
+    fn client_with_static_token() -> (KiroHttpClient, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "lanius-endpoint-test-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"accessToken":"t","refreshToken":"r","profileArn":"arn:test","expiresAt":"2099-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        let config = Config {
+            kiro_creds_file: Some(path.clone()),
+            ..Config::default()
+        };
+        let auth = Arc::new(AuthManager::new(config).unwrap());
+        (
+            KiroHttpClient::with_client(auth, reqwest::Client::new()),
+            path,
+        )
+    }
+
+    fn endpoint(kind: ChatEndpointKind, base: &str, path: &str) -> ChatEndpoint {
+        ChatEndpoint {
+            kind,
+            url: format!("{base}{path}"),
+            amz_target: match kind {
+                ChatEndpointKind::AmazonQ => "AmazonQDeveloperStreamingService.SendMessage",
+                _ => "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_429_switches_endpoint_without_backoff_and_parks_the_first() {
+        let (base, seen) = scripted_server(vec!["429 Too Many Requests", "200 OK"]).await;
+        let (client, creds) = client_with_static_token();
+        let endpoints = [
+            endpoint(ChatEndpointKind::Runtime, &base, "/a"),
+            endpoint(ChatEndpointKind::AmazonQ, &base, "/b"),
+        ];
+        let throttle = EndpointThrottle::default();
+
+        let started = std::time::Instant::now();
+        let response = client
+            .chat_request_to(&endpoints, &serde_json::json!({}), true, &throttle)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            started.elapsed() < BASE_RETRY_DELAY,
+            "switching endpoints must not wait for backoff"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (
+                    "/a".to_string(),
+                    "AmazonCodeWhispererStreamingService.GenerateAssistantResponse".to_string()
+                ),
+                (
+                    "/b".to_string(),
+                    "AmazonQDeveloperStreamingService.SendMessage".to_string()
+                ),
+            ]
+        );
+        assert!(throttle.is_throttled(ChatEndpointKind::Runtime));
+        assert!(!throttle.is_throttled(ChatEndpointKind::AmazonQ));
+        std::fs::remove_file(creds).unwrap();
+    }
+
+    #[tokio::test]
+    async fn chat_request_starts_on_first_free_endpoint() {
+        let (base, seen) = scripted_server(vec!["200 OK"]).await;
+        let (client, creds) = client_with_static_token();
+        let endpoints = [
+            endpoint(ChatEndpointKind::Runtime, &base, "/a"),
+            endpoint(ChatEndpointKind::Q, &base, "/b"),
+        ];
+        let throttle = EndpointThrottle::default();
+        throttle.throttle(ChatEndpointKind::Runtime, THROTTLE_DURATION);
+
+        client
+            .chat_request_to(&endpoints, &serde_json::json!({}), true, &throttle)
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap()[0].0, "/b");
+        std::fs::remove_file(creds).unwrap();
     }
 
     #[test]
