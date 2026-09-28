@@ -52,7 +52,7 @@ impl Snippet {
     }
 }
 
-const MODEL: &str = "claude-opus-5";
+const MODEL: &str = "claude-opus-5.5";
 
 /// Masks the secret portion of an `sk-...`-style API key for on-screen
 /// display, replacing every character after the `sk-` prefix with a bullet
