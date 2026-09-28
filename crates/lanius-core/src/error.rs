@@ -507,6 +507,25 @@ pub fn classify_network_error(error: &reqwest::Error) -> NetworkErrorInfo {
         };
     }
 
+    // rustls reports a peer that drops the TCP connection mid-response as
+    // "peer closed connection without sending TLS close_notify". That is a
+    // connection drop, not a handshake/certificate problem, so it must be
+    // matched before the TLS substring check below.
+    if is_unclean_tls_eof(&chain) {
+        return NetworkErrorInfo {
+            category: ErrorCategory::ConnectionReset,
+            user_message: "Connection closed unexpectedly - the upstream or an intermediate proxy dropped the connection."
+                .into(),
+            troubleshooting_steps: vec![
+                "Retry the request".into(),
+                "Check for a proxy, VPN or firewall terminating long-lived connections".into(),
+            ],
+            technical_details,
+            is_retryable: true,
+            suggested_http_code: 502,
+        };
+    }
+
     if chain.contains("certificate")
         || chain.contains("tls")
         || chain.contains("ssl")
@@ -610,6 +629,11 @@ pub fn classify_network_error(error: &reqwest::Error) -> NetworkErrorInfo {
         is_retryable: true,
         suggested_http_code: 502,
     }
+}
+
+// Expects an already lower-cased source chain.
+fn is_unclean_tls_eof(chain: &str) -> bool {
+    chain.contains("close_notify") || chain.contains("unexpected eof")
 }
 
 // Flattens `error.source()` into a single lower-case-able string so the
@@ -729,6 +753,17 @@ mod tests {
             "reason": "null"
         }));
         assert!(info.user_message.contains("debug logs"));
+    }
+
+    #[test]
+    fn unclean_tls_eof_is_not_a_handshake_failure() {
+        let chain = "error decoding response body | request or response body error | \
+                     peer closed connection without sending tls close_notify: \
+                     https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof";
+        assert!(is_unclean_tls_eof(chain));
+        assert!(!is_unclean_tls_eof(
+            "invalid peer certificate: unknownissuer"
+        ));
     }
 
     #[test]

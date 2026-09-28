@@ -408,8 +408,8 @@ mod tests {
             &ModelInfoCache::default(),
             &mut aliases,
         )
-            .unwrap_or_else(|error| panic!("conversion failed: {error}"))
-            .payload;
+        .unwrap_or_else(|error| panic!("conversion failed: {error}"))
+        .payload;
         let names = payload["conversationState"]["currentMessage"]["userInputMessage"]
             ["userInputMessageContext"]["tools"]
             .as_array()

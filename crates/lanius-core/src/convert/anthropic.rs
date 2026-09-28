@@ -248,9 +248,11 @@ pub fn anthropic_to_kiro(
     let tools = convert_anthropic_tools(request.tools.as_deref(), aliases);
     let system = extract_system_prompt(request.system.as_ref());
     let model = get_model_id_for_kiro(&request.model, &HashMap::new());
-    let model_request_fields = model_cache.reasoning_capability(&model).and_then(|capability| {
-        capability.request_fields(&reasoning_request_from_anthropic(request))
-    });
+    let model_request_fields = model_cache
+        .reasoning_capability(&model)
+        .and_then(|capability| {
+            capability.request_fields(&reasoning_request_from_anthropic(request))
+        });
     core::build_kiro_payload(
         core::KiroPayloadInput {
             messages,
@@ -437,8 +439,8 @@ mod tests {
             &ModelInfoCache::default(),
             &mut aliases,
         )
-            .unwrap_or_else(|error| panic!("conversion failed: {error}"))
-            .payload;
+        .unwrap_or_else(|error| panic!("conversion failed: {error}"))
+        .payload;
         let names = payload["conversationState"]["currentMessage"]["userInputMessage"]
             ["userInputMessageContext"]["tools"]
             .as_array()

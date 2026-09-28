@@ -262,6 +262,12 @@ impl KiroHttpClient {
                 Ok(response) => return Err(upstream_error(response).await),
                 Err(error) => {
                     let info = classify_network_error(&error);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        category = %info.category,
+                        details = %info.technical_details,
+                        "upstream request failed"
+                    );
                     let gateway_error = GatewayError::Network(Box::new(info.clone()));
                     last_network_error = Some(gateway_error);
                     if !info.is_retryable || attempt + 1 == max_retries {

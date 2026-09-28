@@ -350,7 +350,22 @@ async fn preflight_upstream(
                     .boxed();
                 return Ok(replay);
             }
-            Ok(Some(Err(error))) => return Err(error.into()),
+            Ok(Some(Err(error))) => {
+                // Nothing has been sent to the client yet, so a transient
+                // failure on the first chunk can be retried with a fresh request.
+                match GatewayError::from(error) {
+                    GatewayError::Network(info) if info.is_retryable && attempt + 1 < tries => {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            category = %info.category,
+                            details = %info.technical_details,
+                            "first chunk read failed; retrying upstream request"
+                        );
+                        continue;
+                    }
+                    error => return Err(error),
+                }
+            }
             Ok(None) => return Ok(source),
             Err(_) if attempt + 1 < tries => continue,
             Err(_) => return Err(GatewayError::FirstTokenTimeout(config.first_token_timeout)),

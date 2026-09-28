@@ -532,7 +532,8 @@ impl AwsEventStreamParser {
         };
         let signature = field("signature");
         let text = field("text").filter(|text| signature.is_none() || text != "...");
-        (text.is_some() || signature.is_some()).then_some(ParserEvent::Reasoning { text, signature })
+        (text.is_some() || signature.is_some())
+            .then_some(ParserEvent::Reasoning { text, signature })
     }
 
     // Begins accumulating a new tool call. If one was already in progress
@@ -1013,17 +1014,32 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                ParserEvent::Reasoning { text: Some("a".into()), signature: None },
-                ParserEvent::Reasoning { text: Some("a".into()), signature: None },
+                ParserEvent::Reasoning {
+                    text: Some("a".into()),
+                    signature: None
+                },
+                ParserEvent::Reasoning {
+                    text: Some("a".into()),
+                    signature: None
+                },
                 ParserEvent::Content(json!("answer")),
-                ParserEvent::Reasoning { text: None, signature: Some("sig".into()) },
-                ParserEvent::Reasoning { text: None, signature: Some("s2".into()) },
+                ParserEvent::Reasoning {
+                    text: None,
+                    signature: Some("sig".into())
+                },
+                ParserEvent::Reasoning {
+                    text: None,
+                    signature: Some("s2".into())
+                },
             ]
         );
         let events = p.feed(br#"{"text":"..."}"#);
         assert_eq!(
             events,
-            vec![ParserEvent::Reasoning { text: Some("...".into()), signature: None }],
+            vec![ParserEvent::Reasoning {
+                text: Some("...".into()),
+                signature: None
+            }],
             "a streamed \"...\" chunk without a signature is real text"
         );
     }

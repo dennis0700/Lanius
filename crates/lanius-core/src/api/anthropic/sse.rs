@@ -689,7 +689,9 @@ pub fn response_from_stream_result(
             .thinking_signature
             .clone()
             .unwrap_or_else(generate_thinking_signature);
-        content.push(json!({"type":"thinking","thinking":result.thinking_content,"signature":signature}));
+        content.push(
+            json!({"type":"thinking","thinking":result.thinking_content,"signature":signature}),
+        );
     }
     let text = result.content.clone();
     if !text.is_empty() {

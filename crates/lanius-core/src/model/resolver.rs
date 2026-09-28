@@ -802,7 +802,10 @@ mod tests {
         assert!(flags["claude-opus-5.5"]);
         assert!(!flags["gpt-5.6-luna"]);
         assert!(!flags["claude-sonnet-4.5"]);
-        assert!(flags["minimax-m2.5"], "schema-less models on the allowlist count");
+        assert!(
+            flags["minimax-m2.5"],
+            "schema-less models on the allowlist count"
+        );
     }
 
     #[test]

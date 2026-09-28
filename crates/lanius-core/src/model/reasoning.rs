@@ -276,14 +276,22 @@ impl ReasoningCapability {
                     .thinking_types
                     .iter()
                     .find(|t| t.as_str() == "adaptive")
-                    .or_else(|| self.thinking_types.iter().find(|t| t.as_str() != "disabled"))?;
+                    .or_else(|| {
+                        self.thinking_types
+                            .iter()
+                            .find(|t| t.as_str() != "disabled")
+                    })?;
                 let mut thinking = Map::new();
                 thinking.insert("type".into(), Value::String(kind.clone()));
                 let display = request
                     .display
                     .as_ref()
                     .filter(|mode| self.display_modes.contains(mode))
-                    .or_else(|| self.display_modes.iter().find(|m| m.as_str() == "summarized"));
+                    .or_else(|| {
+                        self.display_modes
+                            .iter()
+                            .find(|m| m.as_str() == "summarized")
+                    });
                 if let Some(display) = display {
                     thinking.insert("display".into(), Value::String(display.clone()));
                 }
@@ -367,7 +375,9 @@ mod tests {
         assert_eq!(capability.protocol, ReasoningProtocol::Reasoning);
         assert!(capability.can_disable());
 
-        assert!(ReasoningCapability::from_model(&json!({"modelId": "claude-sonnet-4.5"})).is_none());
+        assert!(
+            ReasoningCapability::from_model(&json!({"modelId": "claude-sonnet-4.5"})).is_none()
+        );
         assert!(
             ReasoningCapability::from_model(&json!({
                 "additionalModelRequestFieldsSchema": {"properties": {"max_tokens": {}}}
@@ -378,7 +388,8 @@ mod tests {
 
     #[test]
     fn claude_defaults_to_adaptive_summarized_without_effort() {
-        let capability = ReasoningCapability::from_model(&claude(&["adaptive", "disabled"])).unwrap();
+        let capability =
+            ReasoningCapability::from_model(&claude(&["adaptive", "disabled"])).unwrap();
         assert_eq!(
             capability.request_fields(&ReasoningRequest::default()),
             Some(json!({"thinking": {"type": "adaptive", "display": "summarized"}}))
@@ -409,7 +420,8 @@ mod tests {
             disabled: true,
             ..Default::default()
         };
-        let toggleable = ReasoningCapability::from_model(&claude(&["adaptive", "disabled"])).unwrap();
+        let toggleable =
+            ReasoningCapability::from_model(&claude(&["adaptive", "disabled"])).unwrap();
         assert_eq!(
             toggleable.request_fields(&disable),
             Some(json!({"thinking": {"type": "disabled"}}))
@@ -444,7 +456,10 @@ mod tests {
     #[test]
     fn gpt_sends_fields_only_when_requested() {
         let capability = ReasoningCapability::from_model(&gpt()).unwrap();
-        assert_eq!(capability.request_fields(&ReasoningRequest::default()), None);
+        assert_eq!(
+            capability.request_fields(&ReasoningRequest::default()),
+            None
+        );
         assert_eq!(
             capability.request_fields(&ReasoningRequest {
                 effort: Some(EffortLevel::Minimal),

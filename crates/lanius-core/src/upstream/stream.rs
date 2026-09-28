@@ -513,7 +513,13 @@ fn is_truthy(value: &Value) -> bool {
 }
 
 fn network_error(error: reqwest::Error) -> GatewayError {
-    GatewayError::Network(Box::new(classify_network_error(&error)))
+    let info = classify_network_error(&error);
+    tracing::warn!(
+        category = %info.category,
+        details = %info.technical_details,
+        "upstream stream read failed"
+    );
+    GatewayError::Network(Box::new(info))
 }
 
 #[cfg(test)]
@@ -593,7 +599,10 @@ mod tests {
         assert_eq!(result.thinking_content, "[Called f with args: {}]");
         assert_eq!(result.thinking_signature.as_deref(), Some("s"));
         assert_eq!(result.content, "ok");
-        assert!(result.tool_calls.is_empty(), "thinking text is not scanned for tool calls");
+        assert!(
+            result.tool_calls.is_empty(),
+            "thinking text is not scanned for tool calls"
+        );
     }
 
     #[tokio::test]

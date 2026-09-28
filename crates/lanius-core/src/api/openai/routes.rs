@@ -369,7 +369,22 @@ where
                         .boxed(),
                 );
             }
-            Ok(Some(Err(error))) => return Err(error.into()),
+            Ok(Some(Err(error))) => {
+                // Nothing has been sent to the client yet, so a transient
+                // failure on the first chunk can be retried with a fresh request.
+                match GatewayError::from(error) {
+                    GatewayError::Network(info) if info.is_retryable && attempt + 1 < tries => {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            category = %info.category,
+                            details = %info.technical_details,
+                            "first chunk read failed; retrying upstream request"
+                        );
+                        continue;
+                    }
+                    error => return Err(error),
+                }
+            }
             Ok(None) => return Ok(source),
             Err(_) if attempt + 1 < tries => continue,
             Err(_) => return Err(GatewayError::FirstTokenTimeout(timeout)),
@@ -781,5 +796,78 @@ mod failover_and_preflight_regression_tests {
             .unwrap_or_else(|| panic!("replayed first byte must be available"))
             .unwrap_or_else(|error| panic!("test stream must be successful: {error}"));
         assert_eq!(first, bytes::Bytes::from_static(b"first"));
+    }
+
+    // Serves one response that sends headers and then drops the connection
+    // before any body chunk, so reading the first chunk yields a real
+    // `reqwest::Error`.
+    async fn truncated_body_stream()
+    -> futures_util::stream::BoxStream<'static, std::result::Result<bytes::Bytes, reqwest::Error>>
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("bind test listener: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("listener address: {error}"));
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                    .await;
+            }
+        });
+        reqwest::get(format!("http://{addr}/"))
+            .await
+            .unwrap_or_else(|error| panic!("test request: {error}"))
+            .bytes_stream()
+            .boxed()
+    }
+
+    #[tokio::test]
+    async fn first_chunk_network_error_retries_before_returning_a_stream() {
+        let mut sources = VecDeque::from([
+            truncated_body_stream().await,
+            stream::once(async {
+                Ok::<bytes::Bytes, reqwest::Error>(bytes::Bytes::from_static(b"first"))
+            })
+            .boxed(),
+        ]);
+        let mut requests = 0_u8;
+        let mut source =
+            preflight_first_byte(2, Duration::from_secs(5), || {
+                requests = requests.saturating_add(1);
+                let next = sources.pop_front();
+                async move {
+                    next.ok_or_else(|| GatewayError::Internal("missing test stream".to_string()))
+                }
+            })
+            .await
+            .unwrap_or_else(|error| {
+                panic!("preflight should retry a dropped first chunk: {error}")
+            });
+        assert_eq!(requests, 2);
+        let first = source
+            .next()
+            .await
+            .unwrap_or_else(|| panic!("replayed first byte must be available"))
+            .unwrap_or_else(|error| panic!("test stream must be successful: {error}"));
+        assert_eq!(first, bytes::Bytes::from_static(b"first"));
+    }
+
+    #[tokio::test]
+    async fn first_chunk_network_error_surfaces_after_last_attempt() {
+        let mut requests = 0_u8;
+        let result = preflight_first_byte(2, Duration::from_secs(5), || {
+            requests = requests.saturating_add(1);
+            async { Ok(truncated_body_stream().await) }
+        })
+        .await;
+        assert_eq!(requests, 2);
+        assert!(matches!(result, Err(GatewayError::Network(_))));
     }
 }

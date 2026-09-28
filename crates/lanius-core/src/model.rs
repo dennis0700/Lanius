@@ -17,8 +17,8 @@ pub(crate) mod resolver;
 
 pub use cache::ModelInfoCache;
 pub use reasoning::{
-    EffortLevel, ReasoningCapability, ReasoningProtocol, ReasoningRequest,
-    THINKING_WITHOUT_SCHEMA, returns_visible_thinking,
+    EffortLevel, ReasoningCapability, ReasoningProtocol, ReasoningRequest, THINKING_WITHOUT_SCHEMA,
+    returns_visible_thinking,
 };
 pub use resolver::{
     ModelDetails, ModelResolution, ModelResolver, extract_model_family, fetch_available_models,
