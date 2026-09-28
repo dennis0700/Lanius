@@ -297,6 +297,8 @@ const EVENT_PATTERNS: &[(&str, PatternKind)] = &[
     ("{\"stop\":", PatternKind::ToolStop),
     ("{\"followupPrompt\":", PatternKind::Followup),
     ("{\"usage\":", PatternKind::Usage),
+    // `meteringEvent` payloads: `{"unit":"credit","unitPlural":"credits","usage":0.03}`.
+    ("{\"unit\":", PatternKind::Metering),
     ("{\"contextUsagePercentage\":", PatternKind::ContextUsage),
 ];
 
@@ -309,6 +311,7 @@ enum PatternKind {
     ToolStop,
     Followup,
     Usage,
+    Metering,
     ContextUsage,
 }
 
@@ -480,6 +483,9 @@ impl AwsEventStreamParser {
             PatternKind::Usage => Some(ParserEvent::Usage(
                 data.get("usage").cloned().unwrap_or(Value::from(0)),
             )),
+            // The whole metering object is kept so downstream formatters can
+            // read the credit amount as well as any cache token counts.
+            PatternKind::Metering => Some(ParserEvent::Usage(data.clone())),
             PatternKind::ContextUsage => Some(ParserEvent::ContextUsage(
                 data.get("contextUsagePercentage")
                     .cloned()
@@ -1076,6 +1082,21 @@ mod tests {
         let mut p = AwsEventStreamParser::new();
         let events = p.feed(br#"{"usage":{"credits":1.3}}"#);
         assert_eq!(events, vec![ParserEvent::Usage(json!({"credits": 1.3}))]);
+    }
+
+    #[test]
+    fn metering_event_is_parsed_as_usage() {
+        let mut p = AwsEventStreamParser::new();
+        let events = p.feed(
+            br#"{"contextUsagePercentage":1.9}{"unit":"credit","unitPlural":"credits","usage":0.032}"#,
+        );
+        assert_eq!(
+            events,
+            vec![
+                ParserEvent::ContextUsage(json!(1.9)),
+                ParserEvent::Usage(json!({"unit":"credit","unitPlural":"credits","usage":0.032})),
+            ]
+        );
     }
 
     #[test]

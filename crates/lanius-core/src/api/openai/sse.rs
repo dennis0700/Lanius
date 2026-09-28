@@ -504,7 +504,8 @@ fn non_stream_tool_call_value(call: &ToolCall) -> Value {
 /// not report usable context usage. Includes a Kiro-specific
 /// `credits_used` field when the upstream metering data is "truthy" (see
 /// [`is_truthy_value`]) — an empty metering object `{}` is treated as
-/// absent rather than as a real (if empty) usage record.
+/// absent rather than as a real (if empty) usage record — plus
+/// `prompt_tokens_details.cached_tokens` when metering reports cache reads.
 fn usage_value(
     context: &OpenAiFormatContext,
     content: &str,
@@ -528,13 +529,30 @@ fn usage_value(
     usage.insert("prompt_tokens".to_string(), json!(calculated.prompt_tokens));
     usage.insert("completion_tokens".to_string(), json!(completion_tokens));
     usage.insert("total_tokens".to_string(), json!(calculated.total_tokens));
-    if metering_data.is_some_and(is_truthy_value) {
-        usage.insert(
-            "credits_used".to_string(),
-            metering_data.cloned().unwrap_or(Value::Null),
-        );
+    if let Some(metering) = metering_data.filter(|value| is_truthy_value(value)) {
+        // A `meteringEvent` object carries the credit amount under `usage`;
+        // any other shape is passed through as-is.
+        let credits = metering
+            .get("usage")
+            .filter(|value| value.is_number())
+            .unwrap_or(metering);
+        usage.insert("credits_used".to_string(), credits.clone());
+        if let Some(cached) = cached_prompt_tokens(metering) {
+            usage.insert(
+                "prompt_tokens_details".to_string(),
+                json!({"cached_tokens": cached}),
+            );
+        }
     }
     Value::Object(usage)
+}
+
+/// Reads the upstream prompt-cache read count (either key spelling) for
+/// OpenAI's `prompt_tokens_details.cached_tokens`.
+fn cached_prompt_tokens(metering: &Value) -> Option<i64> {
+    ["cache_read_input_tokens", "cacheReadInputTokens"]
+        .iter()
+        .find_map(|key| metering.get(*key).and_then(Value::as_i64))
 }
 
 /// Persists truncation records for tool calls and/or content observed in
@@ -674,6 +692,38 @@ mod tests {
         let final_frame = json_frame(&output[3]);
         assert_eq!(final_frame["choices"][0]["finish_reason"], "tool_calls");
         assert_eq!(final_frame["usage"]["credits_used"], json!({"credits": 1}));
+    }
+
+    #[tokio::test]
+    async fn metering_event_maps_to_credits_and_cached_tokens() {
+        let output = frames(vec![
+            Ok(KiroEvent::content("answer")),
+            Ok(KiroEvent::usage(json!({
+                "unit": "credit",
+                "unitPlural": "credits",
+                "usage": 0.03,
+                "cacheReadInputTokens": 1200,
+            }))),
+        ])
+        .await;
+        let final_frame = json_frame(&output[output.len() - 2]);
+        assert_eq!(final_frame["usage"]["credits_used"], json!(0.03));
+        assert_eq!(
+            final_frame["usage"]["prompt_tokens_details"]["cached_tokens"],
+            json!(1200)
+        );
+    }
+
+    #[tokio::test]
+    async fn metering_without_cache_fields_omits_prompt_tokens_details() {
+        let output = frames(vec![
+            Ok(KiroEvent::content("answer")),
+            Ok(KiroEvent::usage(json!({"unit": "credit", "usage": 0.01}))),
+        ])
+        .await;
+        let final_frame = json_frame(&output[output.len() - 2]);
+        assert_eq!(final_frame["usage"]["credits_used"], json!(0.01));
+        assert_eq!(final_frame["usage"].get("prompt_tokens_details"), None);
     }
 
     #[tokio::test]
