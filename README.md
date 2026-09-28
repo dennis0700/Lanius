@@ -111,6 +111,21 @@ Prebuilt static Linux binaries (amd64/arm64) are attached to each GitHub
 Release. See [`docs/deployment.md`](docs/deployment.md) for installing
 `lanius` and running it as a hardened systemd service.
 
+## Updating
+
+- **Desktop app**: checks GitHub for a newer release automatically (toggle in
+  Settings), or click "Check Now" there to check on demand. When a newer
+  version is found, click "Update & Restart" to download, verify, and
+  install it. See [`docs/gui.md`](docs/gui.md) for how this works under the
+  hood.
+- **CLI (`lanius`)**: run `lanius update` to check for and install the
+  latest release in place (`lanius update --check` to only check,
+  `lanius update -y` to skip the confirmation prompt). See
+  [`docs/deployment.md`](docs/deployment.md#upgrading) for the systemd
+  upgrade workflow.
+- **Building from source**: `git pull`, then rebuild with
+  `cargo build --workspace` (or `-p lanius-cli` / `-p lanius-gui`).
+
 ## Testing
 
 ```sh

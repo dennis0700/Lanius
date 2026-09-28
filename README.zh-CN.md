@@ -104,6 +104,18 @@ lanius help
 并将其作为加固的 systemd 服务运行，请参阅
 [`docs/zh-CN/deployment.md`](docs/zh-CN/deployment.md)。
 
+## 更新
+
+- **桌面应用**：会自动检查 GitHub 上的新版本（可在设置中开关），也可以在设置页
+  点击“立即检查”手动触发。发现新版本后，点击“更新并重启”即可下载、验证签名并
+  安装。具体实现细节见 [`docs/zh-CN/gui.md`](docs/zh-CN/gui.md)。
+- **CLI（`lanius`）**：运行 `lanius update` 检查并原地安装最新版本
+  （`lanius update --check` 仅检查、不安装；`lanius update -y` 跳过确认提示）。
+  systemd 环境下的完整升级流程见
+  [`docs/zh-CN/deployment.md`](docs/zh-CN/deployment.md#升级)。
+- **从源码构建**：`git pull` 后重新执行 `cargo build --workspace`
+  （或 `-p lanius-cli` / `-p lanius-gui`）。
+
 ## 测试
 
 ```sh
