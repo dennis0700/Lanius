@@ -47,6 +47,12 @@ regex = "1.11.1"
 urlencoding = "2.1.3"
 clap = { version = "4.6.7", features = ["derive"] }
 
+semver = "1.0.28"
+flate2 = "1.1.10"
+tar = "0.4.46"
+minisign-verify = "0.3.0"
+minisign = "0.10.0"
+
 proptest = "1.6.0"
 
 [profile.release]

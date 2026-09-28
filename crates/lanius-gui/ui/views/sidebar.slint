@@ -60,8 +60,11 @@ export component Sidebar {
     in property <int> current-view;
     in property <bool> server-running;
     in property <string> app-version;
+    in property <bool> update-available;
+    in property <string> update-latest-version;
 
     callback select-view(int);
+    callback install-update();
 
     width: 232px;
 
@@ -159,6 +162,34 @@ export component Sidebar {
 
             Rectangle {
                 vertical-stretch: 1;
+            }
+
+            if root.update-available: Rectangle {
+                border-radius: Brand.radius_md;
+                background: touch-update.has-hover ? Brand.warning.brighter(10%) : Brand.warning;
+                height: 34px;
+
+                animate background { duration: Theme.animation.fast; }
+
+                Text {
+                    text: "↑ v" + root.update-latest-version;
+                    color: #FFFFFF;
+                    font-size: Theme.typography.size_base;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                touch-update := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.install-update();
+                    }
+                }
+            }
+
+            if root.update-available: Rectangle {
+                height: 12px;
             }
 
             Text {

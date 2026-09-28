@@ -6,7 +6,7 @@ import { HintState, HintDot } from "../slintcn/components/tooltip.slint";
 import { Icon } from "../icons.slint";
 import { Tr } from "../generated/tr.slint";
 import { ConfigForm } from "../types.slint";
-import { Panel, Inset, SettingRow, TextField, IconButton } from "common.slint";
+import { Panel, Inset, SettingRow, TextField, IconButton, PillButton } from "common.slint";
 
 component AuthOption {
     in property <bool> selected;
@@ -91,10 +91,21 @@ export component SettingsView {
     in property <[string]> languages;
     in property <int> language-index;
 
+    in property <string> app-version;
+    in property <bool> update-checking;
+    in property <bool> update-available;
+    in property <string> update-latest-version;
+    in property <bool> update-installing;
+    in property <float> update-progress;
+    in property <string> update-error;
+
     callback form-changed();
     callback generate-key();
     callback copy-key();
     callback select-language(int);
+    callback check-for-updates();
+    callback install-update();
+    callback open-release-page();
 
     property <bool> show-key: false;
     in property <bool> key-copied: false;
@@ -279,6 +290,18 @@ export component SettingsView {
                                 }
                             }
                         }
+                        SettingRow {
+                            icon: Icon.refresh;
+                            label: Tr.auto_check_updates;
+                            description: Tr.auto_check_updates_desc;
+                            Switch {
+                                checked: root.form.auto_check_updates;
+                                toggled(value) => {
+                                    root.form.auto_check_updates = value;
+                                    root.form-changed();
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -395,6 +418,101 @@ export component SettingsView {
                                 edited(value) => {
                                     root.form.server_port = value;
                                     root.form-changed();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Inset {
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 12px;
+
+                        Text {
+                            text: Tr.updates_section;
+                            color: Theme.palette.text_primary;
+                            font-size: Theme.typography.size_base;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: space-between;
+
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                alignment: center;
+
+                                Text {
+                                    text: Tr.update_current_version + " v" + root.app-version;
+                                    color: Brand.stone_500;
+                                    font-size: Theme.typography.size_base;
+                                }
+
+                                if root.update-error != "": Text {
+                                    text: Tr.update_failed + ": " + root.update-error;
+                                    color: Brand.destructive_ink;
+                                    font-size: Theme.typography.size_base;
+                                    wrap: word-wrap;
+                                }
+                                if root.update-error != "" && root.update-available: Rectangle {
+                                    height: view-release-text.preferred-height;
+
+                                    view-release-text := Text {
+                                        text: Tr.update_view_release;
+                                        color: Brand.stone_500;
+                                        font-size: Theme.typography.size_base;
+                                        font-weight: 600;
+                                        horizontal-alignment: left;
+                                    }
+
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.open-release-page();
+                                        }
+                                    }
+                                }
+                                if root.update-error == "" && root.update-installing: Text {
+                                    text: Tr.update_installing + " " + Math.round(root.update-progress * 100) + "%";
+                                    color: Brand.stone_500;
+                                    font-size: Theme.typography.size_base;
+                                }
+                                if root.update-error == "" && !root.update-installing && root.update-available: Text {
+                                    text: Tr.update_available + ": v" + root.update-latest-version;
+                                    color: Brand.warning_ink;
+                                    font-size: Theme.typography.size_base;
+                                    font-weight: 600;
+                                }
+                                if root.update-error == "" && !root.update-installing && !root.update-available && !root.update-checking: Text {
+                                    text: Tr.update_up_to_date;
+                                    color: Brand.success_ink;
+                                    font-size: Theme.typography.size_base;
+                                }
+                            }
+
+                            if root.update-available && !root.update-installing: PillButton {
+                                text: Tr.update_now;
+                                icon: Icon.download;
+                                compact: true;
+                                height-override: 36px;
+                                clicked => {
+                                    root.install-update();
+                                }
+                            }
+
+                            if !root.update-available: PillButton {
+                                text: root.update-checking ? Tr.update_checking : Tr.update_check_now;
+                                icon: Icon.refresh;
+                                busy: root.update-checking;
+                                enabled: !root.update-checking;
+                                outlined: true;
+                                compact: true;
+                                height-override: 36px;
+                                clicked => {
+                                    root.check-for-updates();
                                 }
                             }
                         }

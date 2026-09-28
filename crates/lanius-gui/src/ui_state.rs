@@ -41,6 +41,7 @@ pub fn form_from_config(config: &AppConfig) -> ConfigForm {
         server_port: config.server_port.to_string().into(),
         auto_launch: config.auto_launch,
         auto_start_server: config.auto_start_server,
+        auto_check_updates: config.auto_check_updates,
     }
 }
 
@@ -88,6 +89,7 @@ pub fn apply_form(config: &AppConfig, form: &ConfigForm) -> AppConfig {
         server_port: parse_port(form.server_port.as_str()),
         auto_launch: form.auto_launch,
         auto_start_server: form.auto_start_server,
+        auto_check_updates: form.auto_check_updates,
         ..config.clone()
     }
 }

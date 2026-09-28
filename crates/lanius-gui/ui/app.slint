@@ -84,6 +84,17 @@ export component MainWindow inherits Window {
 
     callback select-language(int);
 
+    in property <bool> update-checking;
+    in property <bool> update-available;
+    in property <string> update-latest-version;
+    in property <bool> update-installing;
+    in property <float> update-progress;
+    in property <string> update-error;
+
+    callback check-for-updates();
+    callback install-update();
+    callback open-release-page();
+
     in-out property <int> current-view: 0;
     property <bool> busy: root.is-starting || root.is-stopping;
 
@@ -128,8 +139,13 @@ export component MainWindow inherits Window {
                 current-view: root.current-view;
                 server-running: root.is-running;
                 app-version: root.app-version;
+                update-available: root.update-available;
+                update-latest-version: root.update-latest-version;
                 select-view(index) => {
                     root.current-view = index;
+                }
+                install-update => {
+                    root.install-update();
                 }
             }
 
@@ -328,6 +344,13 @@ export component MainWindow inherits Window {
                                     languages: root.languages;
                                     language-index: root.language-index;
                                     key-copied: root.key-copied;
+                                    app-version: root.app-version;
+                                    update-checking: root.update-checking;
+                                    update-available: root.update-available;
+                                    update-latest-version: root.update-latest-version;
+                                    update-installing: root.update-installing;
+                                    update-progress: root.update-progress;
+                                    update-error: root.update-error;
                                     form-changed => {
                                         root.form-changed();
                                     }
@@ -339,6 +362,15 @@ export component MainWindow inherits Window {
                                     }
                                     select-language(index) => {
                                         root.select-language(index);
+                                    }
+                                    check-for-updates => {
+                                        root.check-for-updates();
+                                    }
+                                    install-update => {
+                                        root.install-update();
+                                    }
+                                    open-release-page => {
+                                        root.open-release-page();
                                     }
                                 }
                             }

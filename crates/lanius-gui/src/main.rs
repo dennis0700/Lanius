@@ -35,6 +35,7 @@ mod server;
 mod tr_generated;
 mod tray;
 mod ui_state;
+mod updater;
 
 #[cfg(test)]
 mod ui_tests;
@@ -329,6 +330,15 @@ fn wire_callbacks(ui: &MainWindow, controller: &Arc<Controller>, handle: &tokio:
     ui.on_clear_logs(spawn_task!(|c: Arc<Controller>| async move {
         c.clear_logs().await;
     }));
+    ui.on_check_for_updates(spawn_task!(|c: Arc<Controller>| async move {
+        c.check_for_updates().await;
+    }));
+    ui.on_install_update(spawn_task!(|c: Arc<Controller>| async move {
+        c.install_update().await;
+    }));
+    ui.on_open_release_page(spawn_task!(|c: Arc<Controller>| async move {
+        c.open_release_page().await;
+    }));
 
     {
         let controller = Arc::clone(controller);
@@ -475,7 +485,6 @@ fn wire_callbacks(ui: &MainWindow, controller: &Arc<Controller>, handle: &tokio:
         });
     }
 }
-
 
 /// Returns the current Unix time in whole seconds, used to build a unique
 /// default filename when exporting logs. Falls back to `0` if the system

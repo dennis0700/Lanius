@@ -220,6 +220,26 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 ## 升级
 
+### 方式 A：`lanius update`（推荐）
+
+二进制程序自带在线更新能力：
+
+```sh
+sudo lanius update           # 检查 GitHub Releases，确认后安装
+sudo lanius update --check   # 只检查是否有新版本，不安装
+sudo lanius update -y        # 跳过确认提示（例如在脚本中使用）
+```
+
+`update` 会从 GitHub 下载对应平台的发布包，用内置的 `minisign` 公钥（见
+`deploy/lanius-release.pub`）验证签名，验证通过后原子替换正在运行的二进制文件；
+如果签名不匹配，或 `/opt/lanius` 不可写，会直接拒绝执行。它不会修改
+`lanius.service` 或 `lanius.env`，也**不会**自动重启服务，更新后需手动执行
+`sudo systemctl restart lanius`。旧的二进制会保留一份备份在
+`/opt/lanius/lanius.old`。在容器内运行时会拒绝更新，因为更新在容器重启后不会保留——
+请改为重新构建或拉取镜像。
+
+### 方式 B：手动升级
+
 ```sh
 # 在新版本解压后的目录中执行：
 install -o root -g root -m 755 lanius /opt/lanius/lanius.new

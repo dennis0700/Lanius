@@ -23,6 +23,8 @@ logs.rs          log line post-processing (ANSI stripping, timestamp split)
 tray.rs          native tray icon/menu
 examples.rs      generated code-snippet examples shown in the UI
 autostart.rs     OS-level "launch at login" registration
+updater.rs       自我更新：检查 GitHub 发布版本、验签下载、
+                 替换 macOS .app 包并重启（按平台 cfg 区分）
 macos.rs         macOS-specific Dock visibility toggling (cfg-gated)
 ui/              Slint UI definitions (.slint files)
 ```
@@ -46,6 +48,17 @@ ui/              Slint UI definitions (.slint files)
 `build_gateway_config` 是转换层，负责把 GUI 自身的 `AppConfig`（它还额外建模了诸如“选择了哪种认证方式”这类 `lanius_core::Config` 无需直接了解的内容）转换为核心网关能够理解的实际 `lanius_core::Config`。
 
 这里产生的状态/日志消息与 `log_capture.rs` 基于 `tracing` 的捕获共用同一个 `LogBuffer`，因此网关生命周期事件（已启动、已停止、端口冲突等）会与运行中网关产生的普通 `tracing::info!`/`warn!`/`error!` 日志行一起显示在 GUI 的日志视图中。
+
+## 自我更新
+
+`updater.rs` 封装了 `lanius_core::update`（与 `lanius-cli` 共用的发布版本查询与验签下载逻辑，见 `crates/lanius-core/src/update.rs`），并在其上实现桌面端特有的安装步骤。`controller.rs` 中的 `Controller::check_for_updates`/`install_update` 是唯二的调用入口：
+
+- `Controller::bootstrap` 启动的后台任务会在 `AppConfig::auto_check_updates` 开启时，每 24 小时（首次有一段启动延迟）检查一次 GitHub；设置页的“立即检查”按钮也会调用同一个 `check_for_updates` 方法。
+- 发现新版本后，侧边栏会显示一个可点击的提示徽标，设置页的“更新”卡片会出现“更新并重启”按钮。不会自动安装——必须由用户点击其中之一。
+- `install_update` 会下载并用 `minisign` 验证发布包的签名，把当前的 `Lanius.app` 替换为新版本（会先备份旧版本，如果替换失败会自动回滚），然后关闭嵌入式网关并重新启动进入新版本。
+- 目前只有 macOS 提供桌面版构建，所以 `updater.rs` 中真正的包替换逻辑都在 `#[cfg(target_os = "macos")]` 之后；在其他平台上，或者当前运行的 app 不是正常安装的包时（例如仍处于 macOS 的应用程序转移隔离路径中，或其所在目录不可写），`install_update` 会回退为在浏览器中打开发布页面。
+
+发布包会在 CI 中用 `minisign` 签名（见 `.github/workflows/macos-build.yml` 的 “Sign update archive” 步骤），使用的是 `crates/lanius-core/src/update.rs` 中 `RELEASE_PUBLIC_KEY` 对应私钥（该公钥也同步保存在 `deploy/lanius-release.pub`，供需要手动验证发布包的人使用）。私钥只保存在 `MINISIGN_SECRET_KEY` 这个 GitHub Actions secret 中；生成和配置方法见该 workflow 文件。
 
 ## UI（Slint）
 

@@ -68,5 +68,18 @@
   "usageOverageOn": "已开启",
   "usageOverageOff": "已关闭",
   "supportsThinking": "支持思考",
-  "supportedModels": "模型"
+  "supportedModels": "模型",
+  "autoCheckUpdates": "自动检查更新",
+  "autoCheckUpdatesDesc": "定期检查 GitHub 上是否有新版本",
+  "updatesSection": "更新",
+  "updateCheckNow": "立即检查",
+  "updateChecking": "正在检查...",
+  "updateUpToDate": "已是最新版本",
+  "updateAvailable": "有可用更新",
+  "updateNow": "更新并重启",
+  "updateInstalling": "正在安装...",
+  "updateDownloading": "正在下载更新...",
+  "updateFailed": "更新失败",
+  "updateViewRelease": "查看发布页面",
+  "updateCurrentVersion": "当前版本"
 }

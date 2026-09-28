@@ -62,6 +62,8 @@ pub mod server;
 pub mod tokenizer;
 /// Cache and recovery-prompt helpers for content/tool-call truncation.
 pub mod truncation;
+/// Self-update support: GitHub release lookup, signed download, and archive extraction.
+pub mod update;
 /// Kiro upstream HTTP client, AWS event-stream parsing, and unified stream events.
 pub mod upstream;
 /// Fingerprinting, user-agent, id generation, and spaced-JSON helpers.

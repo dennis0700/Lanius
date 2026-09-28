@@ -68,5 +68,18 @@
   "usageOverageOn": "Enabled",
   "usageOverageOff": "Disabled",
   "supportsThinking": "Supports Thinking",
-  "supportedModels": "Models"
+  "supportedModels": "Models",
+  "autoCheckUpdates": "Check for Updates Automatically",
+  "autoCheckUpdatesDesc": "Periodically check GitHub for a newer version",
+  "updatesSection": "Updates",
+  "updateCheckNow": "Check Now",
+  "updateChecking": "Checking...",
+  "updateUpToDate": "You're up to date",
+  "updateAvailable": "Update available",
+  "updateNow": "Update & Restart",
+  "updateInstalling": "Installing...",
+  "updateDownloading": "Downloading update...",
+  "updateFailed": "Update failed",
+  "updateViewRelease": "View release",
+  "updateCurrentVersion": "Current version"
 }

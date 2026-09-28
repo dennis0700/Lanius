@@ -90,14 +90,68 @@ jobs:
           echo "dmg_path=dist/${DMG_NAME}" >> "$GITHUB_ENV"
           echo "dmg_name=${DMG_NAME}" >> "$GITHUB_ENV"
 
-      - name: Upload artifact
+      # A plain `.app.tar.gz` alongside the DMG, used only by the in-app
+      # updater (see crates/lanius-gui/src/updater.rs): it needs a bundle it
+      # can extract and swap in without mounting/detaching a disk image.
+      # `COPYFILE_DISABLE=1` skips macOS's `._*` AppleDouble sidecar files,
+      # which `tar` would otherwise embed for extended attributes/resource
+      # forks that don't survive (or matter) after re-extraction.
+      - name: Create update archive
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          UPDATE_NAME="${APP_NAME}-${VERSION}-arm64.app.tar.gz"
+
+          COPYFILE_DISABLE=1 tar -C dist -czf "dist/${UPDATE_NAME}" "${APP_NAME}.app"
+
+          echo "update_path=dist/${UPDATE_NAME}" >> "$GITHUB_ENV"
+          echo "update_name=${UPDATE_NAME}" >> "$GITHUB_ENV"
+
+      # `lanius-desktop`'s in-app updater refuses to trust a downloaded
+      # bundle without a matching minisign `.minisig` signature from
+      # RELEASE_PUBLIC_KEY (crates/lanius-core/src/update.rs). The private
+      # half of that keypair lives only in the `MINISIGN_SECRET_KEY` repo
+      # secret, never in the repo itself.
+      - name: Sign update archive
+        if: github.ref_type == 'tag'
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY is not set; skipping artifact signing. The in-app updater will refuse to install this release."
+            exit 0
+          fi
+
+          cargo install rsign2 --locked --quiet
+
+          umask 077
+          KEY_FILE="${RUNNER_TEMP}/minisign.key"
+          printf '%s' "$MINISIGN_SECRET_KEY" > "$KEY_FILE"
+
+          # The trusted comment binds the signature to this exact asset
+          # name; `Updater::download_verified` refuses to accept a
+          # signature whose comment doesn't match the file being verified.
+          rsign sign -W -s "$KEY_FILE" -t "file:${update_name}" -x "${update_path}.minisig" "${update_path}" </dev/null
+          rm -f "$KEY_FILE"
+
+          PUBLIC_KEY=$(grep -o 'RELEASE_PUBLIC_KEY: &str = "[^"]*"' crates/lanius-core/src/update.rs | sed -E 's/.*"(.*)"/\1/')
+          rsign verify -P "$PUBLIC_KEY" -x "${update_path}.minisig" "${update_path}"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.dmg_name }}
-          path: ${{ env.dmg_path }}
+          path: |
+            ${{ env.dmg_path }}
+            ${{ env.update_path }}*
 
       - name: Upload to GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v3
         with:
-          files: ${{ env.dmg_path }}
+          # The `.app.tar.gz*` glob picks up both the archive and its
+          # `.minisig` (or just the archive if signing above was skipped).
+          files: |
+            ${{ env.dmg_path }}
+            ${{ env.update_path }}*

@@ -33,6 +33,8 @@ arboard = "3.4"
 rfd = "0.17.2"
 tray-icon = "0.24.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
+semver = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 i-slint-backend-testing = "1.18"

@@ -15,6 +15,9 @@
 //! - `probe [prompt] [--capture <file>]` — perform a live end-to-end request
 //!   against the real Kiro backend (see [`probe`]), optionally writing the raw
 //!   response bytes to disk so they can later be fed back into `replay`.
+//! - `update [--check] [-y] [--version <x.y.z>]` — check GitHub Releases for
+//!   a newer build and, unless `--check` is given, download and install it
+//!   in place (see the `update` module).
 //!
 //! `--help`/`-h` and `--version`/`-V` (plus the `help` subcommand) are
 //! provided automatically by `clap` and exit the process directly (status
@@ -36,6 +39,8 @@ use futures_util::StreamExt;
 use lanius_core::Config;
 use lanius_core::auth::AuthManager;
 use lanius_core::upstream::{KiroEvent, KiroEventType, KiroHttpClient, parse_kiro_stream};
+
+mod update;
 
 /// Top-level CLI definition, parsed from `argv` by [`clap`].
 ///
@@ -97,6 +102,18 @@ enum Command {
         #[arg(long)]
         capture: Option<PathBuf>,
     },
+    /// Check for and install a newer `lanius` release from GitHub
+    Update {
+        /// Only report whether a newer version is available; don't install it
+        #[arg(long)]
+        check: bool,
+        /// Skip the interactive confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Install a specific version instead of the latest (e.g. for rollback)
+        #[arg(long = "version", value_name = "X.Y.Z")]
+        pin_version: Option<String>,
+    },
 }
 
 /// Process entry point: parses `argv` via [`Cli::parse`], dispatches to the
@@ -123,6 +140,11 @@ fn main() -> Result<()> {
         Some(Command::Probe { prompt, capture }) => {
             runtime()?.block_on(probe(config, prompt, capture))
         }
+        Some(Command::Update {
+            check,
+            yes,
+            pin_version,
+        }) => runtime()?.block_on(update::run(check, yes, pin_version)),
         None => {
             config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
             print_banner(&config);
@@ -204,11 +226,7 @@ async fn replay(path: &Path) -> Result<()> {
         .collect();
 
     let stream = futures_util::stream::iter(chunks);
-    let events = parse_kiro_stream(
-        stream,
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-    );
+    let events = parse_kiro_stream(stream, Duration::from_secs(5), Duration::from_secs(5));
 
     let summary = print_events(events).await?;
     println!("\n{summary}");
@@ -489,8 +507,7 @@ mod tests {
     /// must be a usage error rather than silently defaulting.
     #[test]
     fn replay_requires_file_argument() {
-        let cli =
-            Cli::try_parse_from(["lanius", "replay", "capture.bin"]).expect("must parse");
+        let cli = Cli::try_parse_from(["lanius", "replay", "capture.bin"]).expect("must parse");
         match cli.command {
             Some(Command::Replay { file }) => assert_eq!(file, PathBuf::from("capture.bin")),
             other => panic!("expected Replay, got {other:?}"),
@@ -515,14 +532,9 @@ mod tests {
             other => panic!("expected Probe, got {other:?}"),
         }
 
-        let with_args = Cli::try_parse_from([
-            "lanius",
-            "probe",
-            "custom prompt",
-            "--capture",
-            "out.bin",
-        ])
-        .expect("must parse");
+        let with_args =
+            Cli::try_parse_from(["lanius", "probe", "custom prompt", "--capture", "out.bin"])
+                .expect("must parse");
         match with_args.command {
             Some(Command::Probe { prompt, capture }) => {
                 assert_eq!(prompt, "custom prompt");
@@ -537,5 +549,41 @@ mod tests {
     #[test]
     fn unknown_subcommand_is_rejected() {
         assert!(Cli::try_parse_from(["lanius", "bogus"]).is_err());
+    }
+
+    /// `update` with no flags must default to a real (non-check-only)
+    /// update, no `-y`, and no version pin; every flag must be threaded
+    /// through when given explicitly.
+    #[test]
+    fn update_flags_default_and_parse() {
+        let bare = Cli::try_parse_from(["lanius", "update"]).expect("must parse");
+        match bare.command {
+            Some(Command::Update {
+                check,
+                yes,
+                pin_version,
+            }) => {
+                assert!(!check);
+                assert!(!yes);
+                assert_eq!(pin_version, None);
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+
+        let with_flags =
+            Cli::try_parse_from(["lanius", "update", "--check", "-y", "--version", "1.2.3"])
+                .expect("must parse");
+        match with_flags.command {
+            Some(Command::Update {
+                check,
+                yes,
+                pin_version,
+            }) => {
+                assert!(check);
+                assert!(yes);
+                assert_eq!(pin_version, Some("1.2.3".to_string()));
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
     }
 }

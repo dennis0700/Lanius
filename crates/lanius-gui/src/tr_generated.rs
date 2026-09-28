@@ -100,4 +100,17 @@ pub fn apply(tr: &Tr, lookup: impl Fn(&str) -> SharedString) {
     tr.set_usage_overage_off(lookup("usageOverageOff"));
     tr.set_supports_thinking(lookup("supportsThinking"));
     tr.set_supported_models(lookup("supportedModels"));
+    tr.set_auto_check_updates(lookup("autoCheckUpdates"));
+    tr.set_auto_check_updates_desc(lookup("autoCheckUpdatesDesc"));
+    tr.set_updates_section(lookup("updatesSection"));
+    tr.set_update_check_now(lookup("updateCheckNow"));
+    tr.set_update_checking(lookup("updateChecking"));
+    tr.set_update_up_to_date(lookup("updateUpToDate"));
+    tr.set_update_available(lookup("updateAvailable"));
+    tr.set_update_now(lookup("updateNow"));
+    tr.set_update_installing(lookup("updateInstalling"));
+    tr.set_update_downloading(lookup("updateDownloading"));
+    tr.set_update_failed(lookup("updateFailed"));
+    tr.set_update_view_release(lookup("updateViewRelease"));
+    tr.set_update_current_version(lookup("updateCurrentVersion"));
 }

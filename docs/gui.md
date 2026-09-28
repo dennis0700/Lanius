@@ -26,6 +26,8 @@ logs.rs          log line post-processing (ANSI stripping, timestamp split)
 tray.rs          native tray icon/menu
 examples.rs      generated code-snippet examples shown in the UI
 autostart.rs     OS-level "launch at login" registration
+updater.rs       self-update: GitHub release check, signed download,
+                 macOS .app bundle swap + relaunch (cfg-gated per platform)
 macos.rs         macOS-specific Dock visibility toggling (cfg-gated)
 ui/              Slint UI definitions (.slint files)
 ```
@@ -76,6 +78,40 @@ as `log_capture.rs`'s `tracing`-based capture, so gateway lifecycle events
 (started, stopped, port conflict, etc.) appear in the GUI's log view
 alongside ordinary `tracing::info!`/`warn!`/`error!` log lines from the
 running gateway.
+
+## Self-update
+
+`updater.rs` wraps `lanius_core::update` (the release-lookup and
+signed-download logic shared with `lanius-cli`, see
+`crates/lanius-core/src/update.rs`) with the desktop-specific install step.
+`Controller::check_for_updates`/`install_update` (in `controller.rs`) are
+the only call sites:
+
+- A background task started from `Controller::bootstrap` checks GitHub
+  every 24 hours (after an initial startup delay) while
+  `AppConfig::auto_check_updates` is enabled; the Settings page's "Check
+  Now" button calls the same `check_for_updates` method on demand.
+- When a newer release is found, the sidebar shows a clickable pill and
+  the Settings page's "Updates" card shows an "Update & Restart" button.
+  Nothing installs automatically — the user must click one of those.
+- `install_update` downloads and `minisign`-verifies the release archive,
+  swaps the current `Lanius.app` bundle for the new one (backing up the old
+  one first, and rolling back if the swap fails), then shuts down the
+  embedded gateway and relaunches into the new bundle.
+- Only macOS ships a desktop build today, so the actual bundle-swap logic
+  in `updater.rs` is behind `#[cfg(target_os = "macos")]`; on any other
+  platform (or if the running app isn't a normally-installed bundle —
+  e.g. it's still sitting in macOS's app-translocation quarantine, or its
+  parent directory isn't writable), `install_update` falls back to opening
+  the release's GitHub page in a browser instead.
+
+Release archives are signed with `minisign` in CI (see
+`.github/workflows/macos-build.yml`'s "Sign update archive" step) against
+the private half of the key in `crates/lanius-core/src/update.rs`'s
+`RELEASE_PUBLIC_KEY` (mirrored in `deploy/lanius-release.pub` for anyone
+who wants to verify a release manually). The private key lives only in the
+`MINISIGN_SECRET_KEY` GitHub Actions secret — see that workflow file for
+how to generate and set it.
 
 ## UI (Slint)
 

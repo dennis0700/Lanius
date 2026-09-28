@@ -46,7 +46,16 @@ use crate::process;
 use crate::server::ServerManager;
 use crate::tray::{TrayCommand, TrayLabels};
 use crate::ui_state::{self, usage_placeholder};
+use crate::updater::{self, AvailableUpdate};
 use crate::{ConfigForm, MainWindow, ModelRow, Tr};
+
+/// How often the background task in [`Controller::bootstrap`] re-checks
+/// GitHub for a newer release while `auto_check_updates` is enabled.
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long [`Controller::bootstrap`] waits before the very first automatic
+/// update check, so it doesn't compete with startup work (config load,
+/// gateway auto-start, initial usage/model fetch) for the network/CPU.
+const UPDATE_CHECK_STARTUP_DELAY: Duration = Duration::from_secs(20);
 
 /// Tray updates staged by [`Controller`] for `main.rs`'s tray timer to
 /// apply, since the actual `tray::Tray` handle lives on the main/event-loop
@@ -88,6 +97,21 @@ struct State {
     snippet: i32,
     last_log_signature: Option<(usize, String)>,
     usage: Option<UsageSummary>,
+    update: UpdateState,
+}
+
+/// In-memory (never persisted) state for the self-update flow: the last
+/// release found to be newer than the running app (if any), plus
+/// checking/installing progress flags. `AppConfig::auto_check_updates` is
+/// the only *persisted* piece of update-related state — this struct is
+/// everything else.
+#[derive(Default)]
+struct UpdateState {
+    available: Option<AvailableUpdate>,
+    checking: bool,
+    installing: bool,
+    progress: f32,
+    error: Option<String>,
 }
 
 /// The GUI's central controller: owns the embedded gateway, current
@@ -325,6 +349,25 @@ impl Controller {
             loop {
                 ticker.tick().await;
                 this.poll_logs_and_status().await;
+            }
+        });
+
+        // Periodic self-update check, gated on `auto_check_updates` (the
+        // config is re-read every tick, so toggling the setting takes
+        // effect on the very next check rather than only after a restart).
+        // The first check is delayed (see `UPDATE_CHECK_STARTUP_DELAY`)
+        // rather than running immediately, so it doesn't compete with
+        // startup work for the network; failures are logged and otherwise
+        // silent, since an update check is a convenience, not something
+        // that should ever interrupt the user.
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(UPDATE_CHECK_STARTUP_DELAY).await;
+            loop {
+                if this.current_config().await.auto_check_updates {
+                    this.check_for_updates().await;
+                }
+                tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
             }
         });
     }
@@ -1006,6 +1049,136 @@ impl Controller {
             state.last_log_signature = None;
         }
         self.poll_logs_and_status().await;
+    }
+
+    /// Pushes the current [`UpdateState`] into the Slint UI's
+    /// update-related properties (mirrored on both the sidebar's pill and
+    /// the settings page's "Updates" card).
+    fn publish_update_state(&self, state: &UpdateState) {
+        let available = state.available.is_some();
+        let latest_version = state
+            .available
+            .as_ref()
+            .map(|u| u.version.to_string())
+            .unwrap_or_default();
+        let checking = state.checking;
+        let installing = state.installing;
+        let progress = state.progress;
+        let error = state.error.clone().unwrap_or_default();
+        self.with_ui(move |ui| {
+            ui.set_update_available(available);
+            ui.set_update_latest_version(latest_version.into());
+            ui.set_update_checking(checking);
+            ui.set_update_installing(installing);
+            ui.set_update_progress(progress);
+            ui.set_update_error(error.into());
+        });
+    }
+
+    /// Checks GitHub for a newer release, called both by the periodic
+    /// background task (see [`bootstrap`](Self::bootstrap)) and the
+    /// "Check Now" button in Settings. Failures are logged and reflected in
+    /// the UI's error text, but otherwise non-fatal — an update check is a
+    /// convenience, never something that should block or crash the app.
+    pub async fn check_for_updates(self: &Arc<Self>) {
+        {
+            let mut state = self.state.lock().await;
+            state.update.checking = true;
+            state.update.error = None;
+            self.publish_update_state(&state.update);
+        }
+
+        let result = updater::check().await;
+
+        let mut state = self.state.lock().await;
+        state.update.checking = false;
+        match result {
+            Ok(available) => {
+                state.update.available = available;
+            }
+            Err(e) => {
+                tracing::warn!("update check failed: {e}");
+                state.update.error = Some(e.to_string());
+            }
+        }
+        self.publish_update_state(&state.update);
+    }
+
+    /// Downloads, verifies, and installs the update found by
+    /// [`check_for_updates`](Self::check_for_updates), then relaunches into
+    /// it. No-ops if no update is currently known to be available (the UI
+    /// only shows the "Update & Restart" action once one is).
+    ///
+    /// On platforms/situations `updater::install` can't handle (see its
+    /// docs — anything other than a normally-installed macOS app bundle),
+    /// falls back to opening the release's GitHub page in a browser so the
+    /// user can still update manually.
+    pub async fn install_update(self: &Arc<Self>) {
+        let Some(update) = self.state.lock().await.update.available.clone() else {
+            return;
+        };
+
+        {
+            let mut state = self.state.lock().await;
+            state.update.installing = true;
+            state.update.progress = 0.0;
+            state.update.error = None;
+            self.publish_update_state(&state.update);
+        }
+
+        let this = Arc::clone(self);
+        let progress_update = move |downloaded: u64, total: u64| {
+            if total > 0 {
+                let fraction = downloaded as f32 / total as f32;
+                let this = Arc::clone(&this);
+                // `install` calls this synchronously from inside the async
+                // download loop; queue the UI update rather than blocking
+                // that loop on an `.await` for every chunk.
+                tokio::spawn(async move {
+                    let mut state = this.state.lock().await;
+                    state.update.progress = fraction;
+                    this.publish_update_state(&state.update);
+                });
+            }
+        };
+
+        match updater::install(&update, progress_update).await {
+            Ok(installed_path) => {
+                self.shutdown().await;
+                if let Err(e) = updater::relaunch(&installed_path) {
+                    tracing::error!("update installed but relaunch failed: {e}");
+                    let mut state = self.state.lock().await;
+                    state.update.installing = false;
+                    state.update.error = Some(e.to_string());
+                    self.publish_update_state(&state.update);
+                    return;
+                }
+                self.queue_tray(|tray| tray.quit = true);
+            }
+            Err(updater::UpdaterError::UnsupportedPlatform) => {
+                tracing::info!("in-app update unsupported here; opening the release page instead");
+                updater::open_url(&update.release.html_url);
+                let mut state = self.state.lock().await;
+                state.update.installing = false;
+                self.publish_update_state(&state.update);
+            }
+            Err(e) => {
+                tracing::error!("update install failed: {e}");
+                let mut state = self.state.lock().await;
+                state.update.installing = false;
+                state.update.error = Some(e.to_string());
+                self.publish_update_state(&state.update);
+            }
+        }
+    }
+
+    /// Opens the GitHub release page in a browser for the currently known
+    /// available update, if any — the fallback action when an in-app
+    /// install can't proceed (unsupported platform, permission failure).
+    pub async fn open_release_page(&self) {
+        if let Some(update) = self.state.lock().await.update.available.clone() {
+            updater::open_url(&update.release.html_url);
+        }
     }
 }
 

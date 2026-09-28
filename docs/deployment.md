@@ -232,6 +232,28 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 ## Upgrading
 
+### Option A: `lanius update` (recommended)
+
+The binary can update itself in place:
+
+```sh
+sudo lanius update           # checks GitHub Releases, prompts, then installs
+sudo lanius update --check   # only report whether a newer version exists
+sudo lanius update -y        # skip the confirmation prompt (e.g. in scripts)
+```
+
+`update` downloads the release archive for your platform from GitHub,
+verifies it against a `minisign` signature embedded in the binary (see
+`deploy/lanius-release.pub`), and atomically replaces the running binary —
+refusing to proceed if the signature doesn't match or `/opt/lanius` isn't
+writable. It never touches `lanius.service` or `lanius.env`. It does *not*
+restart the service; run `sudo systemctl restart lanius` afterward. A
+backup of the previous binary is kept at `/opt/lanius/lanius.old`. Running
+inside a container is refused, since the update would not survive a
+restart there — rebuild or re-pull the image instead.
+
+### Option B: manual
+
 ```sh
 # In the extracted directory of the new release:
 install -o root -g root -m 755 lanius /opt/lanius/lanius.new

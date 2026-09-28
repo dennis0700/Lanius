@@ -84,6 +84,18 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub language: Option<String>,
+
+    /// Whether the app periodically checks GitHub for a newer release (see
+    /// `controller.rs`'s update-check background task). Defaults to `true`
+    /// via `#[serde(default = "default_true")]` so existing config files
+    /// (saved before this field existed) opt in rather than silently
+    /// disabling checks.
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -107,6 +119,7 @@ impl Default for AppConfig {
             auto_start_server: false,
             client_id: None,
             language: None,
+            auto_check_updates: true,
         }
     }
 }
