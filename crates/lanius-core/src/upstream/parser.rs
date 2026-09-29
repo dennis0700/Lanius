@@ -12,7 +12,7 @@
 //! [`AwsEventStreamParser::take_tool_calls`]. Separately,
 //! [`parse_bracket_tool_calls`] recognizes an older, non-JSON tool-call
 //! convention (`[Called <name> with args: {...}]`) embedded directly in
-//! text content. [`crate::upstream::stream`] is the only consumer of both.
+//! text content. `upstream::stream` is the only consumer of both.
 
 use serde_json::Value;
 
@@ -740,15 +740,15 @@ fn is_truthy(v: Option<&Value>) -> bool {
 // containers and other falsy values contribute nothing.
 fn stringify_input(input: Option<&Value>) -> String {
     match input {
-        Some(Value::Object(map)) => {
+        Some(value @ Value::Object(map)) => {
             if map.is_empty() {
                 String::new()
             } else {
-                format_json_spaced(&Value::Object(map.clone()))
+                format_json_spaced(value)
             }
         }
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(a)) if !a.is_empty() => format_json_spaced(&Value::Array(a.clone())),
+        Some(value @ Value::Array(a)) if !a.is_empty() => format_json_spaced(value),
         Some(v) if is_truthy(Some(v)) => v.to_string(),
         _ => String::new(),
     }

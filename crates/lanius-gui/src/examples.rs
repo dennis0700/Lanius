@@ -30,6 +30,15 @@ impl ApiFlavor {
     /// Maps a Slint UI tab index to an [`ApiFlavor`]. Any index other than
     /// `1` (including out-of-range values) falls back to [`ApiFlavor::OpenAi`],
     /// so an unexpected index from the UI never panics.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::examples::ApiFlavor;
+    ///
+    /// assert_eq!(ApiFlavor::from_index(1), ApiFlavor::Anthropic);
+    /// assert_eq!(ApiFlavor::from_index(42), ApiFlavor::OpenAi);
+    /// ```
     pub fn from_index(index: i32) -> Self {
         if index == 1 {
             ApiFlavor::Anthropic
@@ -43,6 +52,15 @@ impl Snippet {
     /// Maps a Slint UI tab index to a [`Snippet`] language. Any index other
     /// than `1` or `2` (including out-of-range values) falls back to
     /// [`Snippet::Curl`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::examples::Snippet;
+    ///
+    /// assert_eq!(Snippet::from_index(2), Snippet::TypeScript);
+    /// assert_eq!(Snippet::from_index(-1), Snippet::Curl);
+    /// ```
     pub fn from_index(index: i32) -> Self {
         match index {
             1 => Snippet::Python,
@@ -59,6 +77,15 @@ const MODEL: &str = "claude-opus-5.5";
 /// (`•`) so the real key is never visible in the rendered example while its
 /// length still hints that a key is present. Keys that don't start with
 /// `sk-` (or placeholder text) are returned unchanged.
+///
+/// # Examples
+///
+/// ```ignore
+/// use crate::examples::mask_key;
+///
+/// assert_eq!(mask_key("sk-abc123"), "sk-••••••");
+/// assert_eq!(mask_key("YOUR_API_KEY"), "YOUR_API_KEY");
+/// ```
 pub fn mask_key(api_key: &str) -> String {
     match api_key.strip_prefix("sk-") {
         Some(rest) if !rest.is_empty() => format!("sk-{}", "•".repeat(rest.chars().count())),
@@ -75,6 +102,15 @@ pub fn mask_key(api_key: &str) -> String {
 /// connect *to*. If `api_key` is empty (e.g. no key configured yet), the
 /// placeholder `YOUR_API_KEY` is substituted so the snippet remains valid,
 /// syntactically complete example code.
+///
+/// # Examples
+///
+/// ```ignore
+/// use crate::examples::{mask_key, render, ApiFlavor, Snippet};
+///
+/// let display = render(ApiFlavor::OpenAi, Snippet::Curl, "0.0.0.0", 8000, &mask_key("sk-abc"));
+/// assert!(display.contains("http://127.0.0.1:8000/v1/chat/completions"));
+/// ```
 pub fn render(flavor: ApiFlavor, snippet: Snippet, host: &str, port: u16, api_key: &str) -> String {
     let host = if host == "0.0.0.0" { "127.0.0.1" } else { host };
     let base_url = format!("http://{host}:{port}");

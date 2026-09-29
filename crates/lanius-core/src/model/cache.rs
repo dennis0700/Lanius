@@ -5,7 +5,7 @@
 //! list ([`ModelInfoCache::load_fallback`]) and then periodically replaced
 //! wholesale with the live catalog fetched from Kiro (see
 //! [`crate::server::AppState::initialize`]). It is consulted by
-//! [`crate::model::resolver::ModelResolver`] to validate/resolve model ids
+//! [`super::ModelResolver`] to validate/resolve model ids
 //! and by [`crate::tokenizer::calculate_tokens_from_context_usage`] to look
 //! up a model's context-window size.
 
@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use super::reasoning::ReasoningCapability;
 use crate::config::{DEFAULT_MAX_INPUT_TOKENS, MODEL_CACHE_TTL, fallback_models};
-use crate::model::reasoning::ReasoningCapability;
 
 #[derive(Debug, Default)]
 struct CacheState {

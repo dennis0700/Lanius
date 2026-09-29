@@ -31,6 +31,13 @@ use objc2_foundation::MainThreadMarker;
 /// - When making the app visible, this also brings it to the front via
 ///   `activateIgnoringOtherApps` (a deprecated but still functional AppKit
 ///   API, hence the `#[allow(deprecated)]`).
+///
+/// # Examples
+///
+/// ```ignore
+/// // On the main thread, after hiding the main window to the tray:
+/// crate::macos::set_dock_visible(false);
+/// ```
 pub fn set_dock_visible(visible: bool) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;

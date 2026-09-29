@@ -33,6 +33,13 @@ pub enum ChatEndpointKind {
 
 impl ChatEndpointKind {
     /// Short name used in logs.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// assert_eq!(ChatEndpointKind::Runtime.as_str(), "runtime");
+    /// assert_eq!(ChatEndpointKind::AmazonQ.as_str(), "amazonq");
+    /// ```
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Runtime => "runtime",
@@ -57,6 +64,14 @@ pub struct ChatEndpoint {
 /// Returns the chat endpoints for `region` in preference order. The first
 /// entry matches the host Lanius used before rotation existed (runtime when a
 /// profile ARN is known, `q` otherwise).
+///
+/// # Examples
+///
+/// ```ignore
+/// let endpoints = chat_endpoints("us-east-1", true);
+/// assert_eq!(endpoints[0].kind, ChatEndpointKind::Runtime);
+/// assert_eq!(endpoints.len(), 4);
+/// ```
 pub fn chat_endpoints(region: &str, has_profile: bool) -> Vec<ChatEndpoint> {
     let region = region.to_ascii_lowercase();
     let endpoint = |kind, host: String, amz_target| ChatEndpoint {
@@ -103,11 +118,28 @@ pub static GLOBAL_THROTTLE: Lazy<EndpointThrottle> = Lazy::new(EndpointThrottle:
 
 impl EndpointThrottle {
     /// Parks `kind` for `duration`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let throttle = EndpointThrottle::default();
+    /// throttle.throttle(ChatEndpointKind::Q, THROTTLE_DURATION);
+    /// assert!(throttle.is_throttled(ChatEndpointKind::Q));
+    /// ```
     pub fn throttle(&self, kind: ChatEndpointKind, duration: Duration) {
         self.lock().insert(kind, Instant::now() + duration);
     }
 
     /// Whether `kind` is still parked.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let throttle = EndpointThrottle::default();
+    /// assert!(!throttle.is_throttled(ChatEndpointKind::Runtime));
+    /// throttle.throttle(ChatEndpointKind::Runtime, Duration::from_secs(30));
+    /// assert!(throttle.is_throttled(ChatEndpointKind::Runtime));
+    /// ```
     pub fn is_throttled(&self, kind: ChatEndpointKind) -> bool {
         let mut until = self.lock();
         match until.get(&kind) {
@@ -122,6 +154,15 @@ impl EndpointThrottle {
 
     /// Returns the index of the first endpoint that is not parked, or `None`
     /// when every endpoint is parked.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let throttle = EndpointThrottle::default();
+    /// let endpoints = chat_endpoints("us-east-1", true);
+    /// throttle.throttle(ChatEndpointKind::Runtime, THROTTLE_DURATION);
+    /// assert_eq!(throttle.pick(&endpoints), Some(1));
+    /// ```
     pub fn pick(&self, endpoints: &[ChatEndpoint]) -> Option<usize> {
         endpoints
             .iter()

@@ -1,7 +1,7 @@
 //! Converts an OpenAI-shaped chat completion request into a Kiro request payload.
 //!
 //! This is the OpenAI-specific half of the [`super`] conversion pipeline: it translates
-//! `crate::api::openai::models` types into [`super::core::UnifiedMessage`]/
+//! `crate::api` OpenAI model types into [`super::core::UnifiedMessage`]/
 //! [`super::core::UnifiedTool`], then delegates to [`super::core::build_kiro_payload`] for
 //! the provider-agnostic normalization and payload assembly. See [`super::anthropic`] for
 //! the Anthropic-specific equivalent, and [`super::core`] for the shared logic both call
@@ -11,9 +11,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use super::core::{self, UnifiedMessage, UnifiedTool};
-use crate::api::openai::models::{
-    ChatCompletionRequest, ChatMessage, OpenAIMessageContent, ReasoningEffort, Tool,
-};
+use crate::api::{ChatCompletionRequest, ChatMessage, OpenAIMessageContent, ReasoningEffort, Tool};
 use crate::compat::ToolNameAliases;
 use crate::config::Config;
 use crate::error::Result;
@@ -29,7 +27,7 @@ use crate::model::{EffortLevel, ModelInfoCache, ReasoningRequest, get_model_id_f
 /// Tool results (`role: "tool"` messages) are buffered rather than emitted immediately: OpenAI
 /// represents each tool result as its own separate message, but Kiro/the unified
 /// representation expects tool results to be attached to the *next* user turn's
-/// `tool_results` field. [`flush_tool_results`] is called both whenever a non-tool message
+/// `tool_results` field. `flush_tool_results` is called both whenever a non-tool message
 /// is encountered (attaching any buffered results, plus any images collected alongside
 /// them, to a synthetic user message before that point) and once more at the end, so
 /// trailing tool results are not silently dropped if the message list ends with them.
@@ -89,10 +87,10 @@ pub fn convert_openai_messages_to_unified(
             // names.
             unified.tool_calls = message
                 .tool_calls
-                .clone()
+                .as_deref()
                 .unwrap_or_default()
-                .into_iter()
-                .filter(Value::is_object)
+                .iter()
+                .filter(|call| call.is_object())
                 .map(|call| normalize_openai_call(call, aliases))
                 .collect();
         }
@@ -201,7 +199,7 @@ pub fn reasoning_request_from_openai(request: &ChatCompletionRequest) -> Reasoni
 /// Top-level entry point: converts a full OpenAI [`ChatCompletionRequest`] into a Kiro
 /// request payload.
 ///
-/// Tool names are registered up front via [`register_openai_tool_names`] before message
+/// Tool names are registered up front via `register_openai_tool_names` before message
 /// conversion runs, so that any tool-call references inside the message history are
 /// aliased consistently with the top-level tool declarations (registering first avoids a
 /// name being aliased one way in a message and a different way in the tools array, which
@@ -288,7 +286,7 @@ fn content_value(content: Option<&OpenAIMessageContent>) -> Result<Value> {
 /// Rebuilds an OpenAI tool-call JSON value with its function name replaced by the
 /// corresponding alias, preserving the call `id` and raw `arguments` string (defaulting
 /// arguments to `"{}"` if absent) unchanged.
-fn normalize_openai_call(call: Value, aliases: &mut ToolNameAliases) -> Value {
+fn normalize_openai_call(call: &Value, aliases: &mut ToolNameAliases) -> Value {
     let object = call.as_object();
     let function = object
         .and_then(|object| object.get("function"))
@@ -335,7 +333,7 @@ fn nonempty_result(value: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::openai::models::{ChatCompletionRequest, ChatMessage};
+    use crate::api::{ChatCompletionRequest, ChatMessage};
     use serde_json::json;
     #[test]
     fn extracts_system_and_groups_tool_results() {

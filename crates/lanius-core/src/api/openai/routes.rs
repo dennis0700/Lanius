@@ -5,7 +5,7 @@
 //! Responsibilities specific to this module:
 //! - Bearer token authentication (`Authorization: Bearer <key>`).
 //! - Resolving client-facing model ids/aliases via
-//!   [`crate::model::resolver::ModelResolver`] before dispatching to Kiro.
+//!   [`crate::model::ModelResolver`] before dispatching to Kiro.
 //! - Converting the request into the Kiro payload via
 //!   [`build_kiro_payload`] and issuing the upstream request.
 //! - Injecting a synthetic `web_search` tool when enabled, and rewriting
@@ -28,12 +28,12 @@ use std::sync::Arc;
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
 
-use crate::api::anthropic::sse::DEFAULT_PING_INTERVAL;
-use crate::api::openai::models::{
+use super::models::{
     ChatCompletionRequest, ChatMessage, ModelList, OpenAIMessageContent, OpenAIModel, Tool,
     ToolFunction,
 };
-use crate::api::openai::sse::{OpenAiFormatContext, collect_openai_response, encode_openai_sse};
+use super::sse::{OpenAiFormatContext, collect_openai_response, encode_openai_sse};
+use crate::api::DEFAULT_PING_INTERVAL;
 use crate::auth::AuthManager;
 use crate::compat::ToolNameAliases;
 use crate::config::{APP_TITLE, APP_VERSION, Config};
@@ -311,13 +311,12 @@ async fn preflight_openai_stream(
     preflight_first_byte(
         config.first_token_max_retries,
         config.first_token_timeout,
-        move || {
+        || {
             let auth_manager = auth_manager.clone();
-            let config = config.clone();
-            let payload = payload.clone();
+            let payload = &payload;
             async move {
-                let client = KiroHttpClient::new(auth_manager, &config)?;
-                let response = client.chat_request_with_retry(&payload, true).await?;
+                let client = KiroHttpClient::new(auth_manager, config)?;
+                let response = client.chat_request_with_retry(payload, true).await?;
                 Ok(response.bytes_stream().boxed())
             }
         },
@@ -566,46 +565,45 @@ fn conversation_id_for(messages: &[ChatMessage]) -> String {
 ///
 /// Unconditionally looks up the store (unlike the Anthropic equivalent,
 /// which checks `config.truncation_recovery` up front) — if truncation
-/// recovery was disabled, [`super::sse::save_truncations`] never wrote any
+/// recovery was disabled, `sse::save_truncations` never wrote any
 /// records, so these lookups simply find nothing and this becomes a no-op.
 fn inject_truncation_recovery(
     request: &mut ChatCompletionRequest,
     store: &TruncationStore,
     conversation_id: &str,
 ) {
-    let mut recovered = Vec::with_capacity(request.messages.len());
-    for message in &request.messages {
+    let messages = std::mem::take(&mut request.messages);
+    let mut recovered = Vec::with_capacity(messages.len());
+    for mut message in messages {
         if message.role == "tool" {
             if let Some(id) = message.tool_call_id.as_deref() {
                 if store.get_tool_truncation(conversation_id, id).is_some() {
-                    let mut replacement = message.clone();
                     let original = message_content_text(message.content.as_ref());
-                    replacement.content = Some(OpenAIMessageContent::Text(
+                    message.content = Some(OpenAIMessageContent::Text(
                         prepend_tool_recovery_notice(&original),
                     ));
-                    recovered.push(replacement);
+                    recovered.push(message);
                     continue;
                 }
             }
         }
-        recovered.push(message.clone());
-        if message.role == "assistant" {
-            if let Some(OpenAIMessageContent::Text(content)) = message.content.as_ref() {
-                if store
-                    .get_content_truncation(conversation_id, content)
-                    .is_some()
-                {
-                    recovered.push(ChatMessage {
-                        role: "user".to_string(),
-                        content: Some(OpenAIMessageContent::Text(
-                            generate_truncation_user_message().to_string(),
-                        )),
-                        name: None,
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-            }
+        let content_truncated = message.role == "assistant"
+            && matches!(
+                message.content.as_ref(),
+                Some(OpenAIMessageContent::Text(content))
+                    if store.get_content_truncation(conversation_id, content).is_some()
+            );
+        recovered.push(message);
+        if content_truncated {
+            recovered.push(ChatMessage {
+                role: "user".to_string(),
+                content: Some(OpenAIMessageContent::Text(
+                    generate_truncation_user_message().to_string(),
+                )),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
         }
     }
     request.messages = recovered;
@@ -618,7 +616,9 @@ fn inject_truncation_recovery(
 fn message_content_text(content: Option<&OpenAIMessageContent>) -> String {
     match content {
         Some(OpenAIMessageContent::Text(content)) => content.clone(),
-        Some(OpenAIMessageContent::Blocks(content)) => Value::Array(content.clone()).to_string(),
+        Some(OpenAIMessageContent::Blocks(content)) => {
+            serde_json::to_string(content).unwrap_or_default()
+        }
         Some(OpenAIMessageContent::Other(content)) => content.to_string(),
         None => String::new(),
     }

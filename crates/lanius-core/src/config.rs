@@ -35,7 +35,7 @@ pub const KIRO_Q_HOST_TEMPLATE: &str = "https://runtime.{region}.kiro.dev";
 pub const TOKEN_REFRESH_THRESHOLD: Duration = Duration::from_secs(600);
 
 /// Maximum number of attempts for non-streaming upstream requests
-/// (see [`crate::upstream::client::KiroHttpClient`]).
+/// (see [`crate::upstream::KiroHttpClient`]).
 pub const MAX_RETRIES: u32 = 3;
 
 /// Base delay for the exponential backoff applied between retried upstream
@@ -43,7 +43,7 @@ pub const MAX_RETRIES: u32 = 3;
 pub const BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// How long a fetched model catalog is considered fresh before
-/// [`crate::model::cache::ModelInfoCache::is_stale`] reports it as stale.
+/// [`crate::model::ModelInfoCache::is_stale`] reports it as stale.
 pub const MODEL_CACHE_TTL: Duration = Duration::from_secs(3600);
 
 /// Fallback maximum input token count used when a model's real limit is
@@ -72,7 +72,7 @@ pub fn default_hidden_from_list() -> Vec<String> {
 }
 
 /// Default mapping of externally-facing alias names to internal model ids,
-/// applied before normalization in [`crate::model::resolver::ModelResolver`].
+/// applied before normalization in [`crate::model::ModelResolver`].
 ///
 /// # Examples
 ///
@@ -90,7 +90,7 @@ pub fn default_model_aliases() -> HashMap<String, String> {
 
 /// Built-in snapshot of the Kiro model catalog, served when the live catalog
 /// cannot be fetched from upstream (see
-/// [`crate::model::cache::ModelInfoCache::load_fallback`]).
+/// [`crate::model::ModelInfoCache::load_fallback`]).
 ///
 /// # Examples
 ///
@@ -212,7 +212,7 @@ pub struct Config {
     /// before giving up with [`crate::error::GatewayError::StreamReadTimeout`].
     pub streaming_read_timeout: Duration,
     /// Maximum number of attempts made while waiting for the first streamed
-    /// token (see [`crate::upstream::client::KiroHttpClient`]).
+    /// token (see [`crate::upstream::KiroHttpClient`]).
     pub first_token_max_retries: u32,
 
     /// Maximum request payload size, in bytes, sent to Kiro.
@@ -231,7 +231,7 @@ pub struct Config {
     pub debug_dir: PathBuf,
 
     /// Externally-facing alias names mapped to internal model ids, consulted
-    /// before normalization in [`crate::model::resolver::ModelResolver`].
+    /// before normalization in [`crate::model::ModelResolver`].
     pub model_aliases: HashMap<String, String>,
     /// Model ids that remain resolvable but are hidden from the advertised
     /// `/v1/models` list.

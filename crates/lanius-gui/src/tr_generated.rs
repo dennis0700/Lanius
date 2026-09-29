@@ -29,6 +29,15 @@ use slint::SharedString;
 /// [`crate::i18n::Translations::get`]); this function performs no fallback
 /// logic of its own. This directly mutates the live `Tr` global, so any UI
 /// bound to `Tr`'s properties will refresh immediately.
+///
+/// # Examples
+///
+/// ```ignore
+/// let translations = crate::i18n::Translations::load();
+/// crate::tr_generated::apply(&ui.global::<crate::Tr>(), |key| {
+///     slint::SharedString::from(translations.get(key))
+/// });
+/// ```
 pub fn apply(tr: &Tr, lookup: impl Fn(&str) -> SharedString) {
     tr.set_dashboard(lookup("dashboard"));
     tr.set_tab_settings(lookup("tabSettings"));

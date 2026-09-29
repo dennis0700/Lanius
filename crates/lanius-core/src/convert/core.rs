@@ -36,8 +36,8 @@ const EMPTY_RESULT: &str = "(empty result)";
 ///
 /// `tool_calls` and `tool_results` are kept in OpenAI-ish JSON shape (rather than a typed
 /// struct) since the conversion and later re-serialization to Kiro's format both operate
-/// on that shape directly; see [`extract_tool_uses`] and
-/// [`convert_tool_results_to_kiro_format`].
+/// on that shape directly; see `extract_tool_uses` and
+/// `convert_tool_results_to_kiro_format`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnifiedMessage {
     /// The message's role (e.g. `"user"`, `"assistant"`).
@@ -149,7 +149,7 @@ pub fn extract_text_content(content: &Value) -> String {
         Value::Array(items) => items
             .iter()
             .filter_map(|item| match item {
-                Value::String(text) => Some(text.clone()),
+                Value::String(text) => Some(text.as_str()),
                 Value::Object(object) => {
                     let kind = object.get("type").and_then(Value::as_str);
                     if matches!(
@@ -158,10 +158,7 @@ pub fn extract_text_content(content: &Value) -> String {
                     ) {
                         None
                     } else {
-                        object
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned)
+                        object.get("text").and_then(Value::as_str)
                     }
                 }
                 _ => None,
@@ -172,7 +169,7 @@ pub fn extract_text_content(content: &Value) -> String {
 }
 
 /// Extracts any inline images from an array-shaped `content` value, supporting both the
-/// OpenAI `image_url` (with a `data:` URL, parsed via [`parse_data_url`]) and Anthropic
+/// OpenAI `image_url` (with a `data:` URL, parsed via `parse_data_url`) and Anthropic
 /// `image` (with an explicit base64 `source`) block shapes. Non-array content, malformed
 /// blocks, or blocks with empty image data are silently skipped rather than erroring.
 ///
@@ -197,7 +194,10 @@ pub fn extract_images_from_content(content: &Value) -> Vec<UnifiedImage> {
             match object.get("type").and_then(Value::as_str) {
                 Some("image_url") => {
                     let url = object.get("image_url")?.get("url")?.as_str()?;
-                    parse_data_url(url).map(|(media_type, data)| UnifiedImage { media_type, data })
+                    parse_data_url(url).map(|(media_type, data)| UnifiedImage {
+                        media_type: media_type.to_owned(),
+                        data: data.to_owned(),
+                    })
                 }
                 Some("image") => {
                     let source = object.get("source")?.as_object()?;
@@ -242,34 +242,28 @@ pub fn extract_images_from_content(content: &Value) -> Vec<UnifiedImage> {
 /// assert!(!cleaned.contains_key("additionalProperties"));
 /// ```
 pub fn sanitize_json_schema(schema: Option<&Map<String, Value>>) -> Map<String, Value> {
+    fn clean_object(object: &Map<String, Value>) -> Map<String, Value> {
+        object
+            .iter()
+            .filter_map(|(key, value)| {
+                if key == "additionalProperties"
+                    || (key == "required" && value.as_array().is_some_and(Vec::is_empty))
+                {
+                    None
+                } else {
+                    Some((key.clone(), clean(value)))
+                }
+            })
+            .collect()
+    }
     fn clean(value: &Value) -> Value {
         match value {
-            Value::Object(object) => Value::Object(
-                object
-                    .iter()
-                    .filter_map(|(key, value)| {
-                        if key == "additionalProperties"
-                            || (key == "required" && value.as_array().is_some_and(Vec::is_empty))
-                        {
-                            None
-                        } else {
-                            Some((key.clone(), clean(value)))
-                        }
-                    })
-                    .collect(),
-            ),
+            Value::Object(object) => Value::Object(clean_object(object)),
             Value::Array(items) => Value::Array(items.iter().map(clean).collect()),
             other => other.clone(),
         }
     }
-    schema
-        .map(|schema| {
-            clean(&Value::Object(schema.clone()))
-                .as_object()
-                .cloned()
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+    schema.map(clean_object).unwrap_or_default()
 }
 
 /// For any tool whose `description` exceeds `max_length` characters (counted by
@@ -280,7 +274,7 @@ pub fn sanitize_json_schema(schema: Option<&Map<String, Value>>) -> Map<String, 
 /// addendum. This works around Kiro's tool-description size limit while still making the
 /// full documentation available to the model, just relocated into the system prompt (see
 /// [`build_kiro_payload`], which appends the returned documentation string via
-/// [`append_system`]).
+/// `append_system`).
 ///
 /// `max_length == 0` disables this behavior entirely (descriptions are passed through
 /// unchanged, and no documentation is generated) — used when overflow handling is not
@@ -314,7 +308,7 @@ pub fn process_tools_with_long_descriptions(
     let processed = tools
         .iter()
         .map(|tool| {
-            let description = tool.description.clone().unwrap_or_default();
+            let description = tool.description.as_deref().unwrap_or_default();
             if description.chars().count() > max_length {
                 docs.push(format!("## Tool: {}\n\n{description}", tool.name));
                 UnifiedTool {
@@ -404,7 +398,7 @@ pub fn convert_tools_to_kiro_format(tools: Option<&[UnifiedTool]>) -> Vec<Value>
 /// Renders a list of tool-call JSON values as human-readable inline text (`[Tool: <name>
 /// (<id>)]\n<arguments>`), used when tool calls must be flattened into plain message text
 /// rather than sent as structured Kiro tool uses — specifically when the current request
-/// declares no tools at all (see [`preprocess_tool_context`]), in which case Kiro has
+/// declares no tools at all (see `preprocess_tool_context`), in which case Kiro has
 /// nowhere structured to put a tool call/result, so it is rendered as narrative text
 /// instead so the model still has that context.
 ///
@@ -481,7 +475,7 @@ pub fn tool_results_to_text(results: &[Value]) -> String {
 }
 
 /// Merges consecutive messages that share the same `role` into a single message: their
-/// text content is concatenated (see [`merge_content`]), and role-appropriate tool data is
+/// text content is concatenated (see `merge_content`), and role-appropriate tool data is
 /// combined (`tool_calls` only for merged assistant turns, `tool_results` only for merged
 /// user turns — matching which of those fields is actually meaningful for that role).
 /// Non-adjacent same-role messages are *not* merged; only strictly consecutive runs are
@@ -503,7 +497,7 @@ pub fn merge_adjacent_messages(messages: Vec<UnifiedMessage>) -> Vec<UnifiedMess
     let mut merged: Vec<UnifiedMessage> = Vec::new();
     for message in messages {
         if let Some(last) = merged.last_mut().filter(|last| last.role == message.role) {
-            last.content = merge_content(&last.content, &message.content);
+            last.content = merge_content(std::mem::take(&mut last.content), message.content);
             if message.role == "assistant" {
                 last.tool_calls.extend(message.tool_calls);
             }
@@ -618,7 +612,7 @@ pub fn build_kiro_history(messages: &[UnifiedMessage], model_id: &str) -> Result
     messages
         .iter()
         .map(|message| match message.role.as_str() {
-            "user" => Ok(json!({"userInputMessage": build_user(message, model_id, false, &[])})),
+            "user" => Ok(json!({"userInputMessage": build_user(message, model_id, Vec::new())})),
             "assistant" => Ok(json!({"assistantResponseMessage": build_assistant(message)?})),
             _ => Err(GatewayError::Internal(
                 "history received unnormalized role".to_owned(),
@@ -661,8 +655,8 @@ pub struct KiroPayloadInput<'a> {
 ///    ([`validate_tool_names`]).
 /// 2. Assemble the full system prompt: the caller-supplied `system_prompt`, plus any
 ///    relocated tool documentation, plus (if enabled in `config`) the truncation-recovery
-///    instructional addition ([`truncation_system_addition`]).
-/// 3. Preprocess tool context ([`preprocess_tool_context`]) — flattening tool calls/results
+///    instructional addition (`truncation_system_addition`).
+/// 3. Preprocess tool context (`preprocess_tool_context`) — flattening tool calls/results
 ///    into narrative text when no tools are declared for this turn, or when a tool result
 ///    appears without a preceding assistant tool call to attach to.
 /// 4. Merge adjacent same-role turns, then normalize roles and enforce user-first/
@@ -732,16 +726,14 @@ pub fn build_kiro_payload(
 
     let preprocessed = preprocess_tool_context(messages, processed_tools.is_some());
     let merged = merge_adjacent_messages(preprocessed);
-    let normalized = ensure_alternating_roles(normalize_message_roles(
+    let mut history_messages = ensure_alternating_roles(normalize_message_roles(
         ensure_first_message_is_user(merged),
     ));
-    if normalized.is_empty() {
+    let Some(current) = history_messages.pop() else {
         return Err(GatewayError::InvalidRequest(
             "No messages to send".to_owned(),
         ));
-    }
-
-    let mut history_messages = normalized[..normalized.len() - 1].to_vec();
+    };
     // The system prompt is prepended to whichever turn will actually be sent *first*:
     // if there is any history at all, that's history[0]; if the conversation is a single
     // turn (no history), it's handled further below by prepending to `current_content`
@@ -754,11 +746,6 @@ pub fn build_kiro_payload(
         ));
     }
     let mut history = build_kiro_history(&history_messages, model_id)?;
-
-    let current = normalized
-        .last()
-        .cloned()
-        .unwrap_or_else(|| UnifiedMessage::text("user", EMPTY_PLACEHOLDER));
     let mut current_content = extract_text_content(&current.content);
     if !full_system.is_empty() && history.is_empty() {
         current_content = format!("{}\n\n{current_content}", full_system);
@@ -774,9 +761,9 @@ pub fn build_kiro_payload(
         current_content = EMPTY_PLACEHOLDER.to_owned();
     }
     let kiro_tools = convert_tools_to_kiro_format(processed_tools.as_deref());
-    let mut current_message = current.clone();
+    let mut current_message = current;
     current_message.content = Value::String(current_content);
-    let current_user = build_user(&current_message, model_id, true, &kiro_tools);
+    let current_user = build_user(&current_message, model_id, kiro_tools);
     let mut state = Map::new();
     state.insert(
         "chatTriggerType".to_owned(),
@@ -873,7 +860,7 @@ fn preprocess_tool_context(messages: Vec<UnifiedMessage>, has_tools: bool) -> Ve
 /// current turn ever carries a `tools` list in `userInputMessageContext`, since Kiro
 /// expects tool declarations attached once per request rather than repeated in every
 /// history entry.
-fn build_user(message: &UnifiedMessage, model_id: &str, current: bool, tools: &[Value]) -> Value {
+fn build_user(message: &UnifiedMessage, model_id: &str, tools: Vec<Value>) -> Value {
     let mut user = Map::new();
     user.insert(
         "content".to_owned(),
@@ -881,19 +868,21 @@ fn build_user(message: &UnifiedMessage, model_id: &str, current: bool, tools: &[
     );
     user.insert("modelId".to_owned(), Value::String(model_id.to_owned()));
     user.insert("origin".to_owned(), Value::String("AI_EDITOR".to_owned()));
-    let images = if message.images.is_empty() {
-        extract_images_from_content(&message.content)
+    let extracted;
+    let images: &[UnifiedImage] = if message.images.is_empty() {
+        extracted = extract_images_from_content(&message.content);
+        &extracted
     } else {
-        message.images.clone()
+        &message.images
     };
-    let images = convert_images_to_kiro_format(&images);
+    let images = convert_images_to_kiro_format(images);
     if !images.is_empty() {
         user.insert("images".to_owned(), Value::Array(images));
     }
     let results = convert_tool_results_to_kiro_format(&message.tool_results);
     let mut context = Map::new();
-    if current && !tools.is_empty() {
-        context.insert("tools".to_owned(), Value::Array(tools.to_vec()));
+    if !tools.is_empty() {
+        context.insert("tools".to_owned(), Value::Array(tools));
     }
     if !results.is_empty() {
         context.insert("toolResults".to_owned(), Value::Array(results));
@@ -905,7 +894,7 @@ fn build_user(message: &UnifiedMessage, model_id: &str, current: bool, tools: &[
 }
 
 /// Builds a Kiro `assistantResponseMessage` object from a unified assistant message,
-/// including its `toolUses` array (via [`extract_tool_uses`]) if it has any tool calls.
+/// including its `toolUses` array (via `extract_tool_uses`) if it has any tool calls.
 fn build_assistant(message: &UnifiedMessage) -> Result<Value> {
     let mut assistant = Map::new();
     assistant.insert(
@@ -927,7 +916,7 @@ fn build_assistant(message: &UnifiedMessage) -> Result<Value> {
 /// error rather than silently dropped, since that indicates the model produced malformed
 /// tool-call arguments.
 fn extract_tool_uses(calls: &[Value]) -> Result<Vec<Value>> {
-    calls.iter().map(|call| { let function = call.get("function").and_then(Value::as_object).cloned().unwrap_or_default(); let argument = function.get("arguments").cloned().unwrap_or_else(|| Value::String("{}".to_owned())); let input = match argument { Value::String(arguments) if arguments.is_empty() => Value::Object(Map::new()), Value::String(arguments) => serde_json::from_str(&arguments).map_err(GatewayError::from)?, value if value.is_null() => Value::Object(Map::new()), value => value, }; Ok(json!({"name":function.get("name").and_then(Value::as_str).unwrap_or_default(),"input":input,"toolUseId":call.get("id").and_then(Value::as_str).unwrap_or_default()})) }).collect()
+    calls.iter().map(|call| { let function = call.get("function").and_then(Value::as_object); let input = match function.and_then(|function| function.get("arguments")) { None => Value::Object(Map::new()), Some(Value::String(arguments)) if arguments.is_empty() => Value::Object(Map::new()), Some(Value::String(arguments)) => serde_json::from_str(arguments).map_err(GatewayError::from)?, Some(Value::Null) => Value::Object(Map::new()), Some(value) => value.clone(), }; Ok(json!({"name":function.and_then(|function| function.get("name")).and_then(Value::as_str).unwrap_or_default(),"input":input,"toolUseId":call.get("id").and_then(Value::as_str).unwrap_or_default()})) }).collect()
 }
 
 /// Converts unified tool-result JSON values into Kiro's `toolResults` entry shape,
@@ -939,46 +928,44 @@ fn convert_tool_results_to_kiro_format(results: &[Value]) -> Vec<Value> {
 }
 /// Converts unified images into Kiro's image entry shape (`{"format": ..., "source": {"bytes": ...}}`).
 /// If an image's `data` still looks like a full `data:` URL (rather than already-extracted
-/// base64), it is re-parsed via [`parse_data_url`] to recover the actual media
+/// base64), it is re-parsed via `parse_data_url` to recover the actual media
 /// type/base64 payload before conversion; images with empty data are dropped entirely.
 fn convert_images_to_kiro_format(images: &[UnifiedImage]) -> Vec<Value> {
-    images.iter().filter_map(|image| { if image.data.is_empty() { return None; } let (media_type, data) = if image.data.starts_with("data:") { parse_data_url(&image.data).unwrap_or_else(|| (image.media_type.clone(), image.data.clone())) } else { (image.media_type.clone(), image.data.clone()) }; Some(json!({"format":media_type.rsplit('/').next().unwrap_or(&media_type),"source":{"bytes":data}})) }).collect()
+    images.iter().filter_map(|image| { if image.data.is_empty() { return None; } let (media_type, data) = if image.data.starts_with("data:") { parse_data_url(&image.data).unwrap_or((&image.media_type, &image.data)) } else { (image.media_type.as_str(), image.data.as_str()) }; Some(json!({"format":media_type.rsplit('/').next().unwrap_or(media_type),"source":{"bytes":data}})) }).collect()
 }
 /// Combines two message `content` values when merging adjacent same-role messages
 /// ([`merge_adjacent_messages`]): if either side is already an array of content blocks,
 /// the result stays an array (converting the non-array side to a single text block as
 /// needed); otherwise both sides are treated as plain text and joined with a newline.
-fn merge_content(left: &Value, right: &Value) -> Value {
+fn merge_content(left: Value, right: Value) -> Value {
     match (left, right) {
-        (Value::Array(left), Value::Array(right)) => {
-            let mut all = left.clone();
-            all.extend(right.clone());
+        (Value::Array(mut left), Value::Array(right)) => {
+            left.extend(right);
+            Value::Array(left)
+        }
+        (Value::Array(mut left), right) => {
+            left.push(json!({"type":"text","text":extract_text_content(&right)}));
+            Value::Array(left)
+        }
+        (left, Value::Array(right)) => {
+            let mut all = vec![json!({"type":"text","text":extract_text_content(&left)})];
+            all.extend(right);
             Value::Array(all)
         }
-        (Value::Array(left), _) => {
-            let mut all = left.clone();
-            all.push(json!({"type":"text","text":extract_text_content(right)}));
-            Value::Array(all)
-        }
-        (_, Value::Array(right)) => {
-            let mut all = vec![json!({"type":"text","text":extract_text_content(left)})];
-            all.extend(right.clone());
-            Value::Array(all)
-        }
-        _ => Value::String(format!(
+        (left, right) => Value::String(format!(
             "{}\n{}",
-            extract_text_content(left),
-            extract_text_content(right)
+            extract_text_content(&left),
+            extract_text_content(&right)
         )),
     }
 }
 /// Splits a `data:<media-type>;base64,<data>`-style URL into its media type and base64
 /// payload. Returns `None` if the URL has no `,` separator, does not start with `data:`,
 /// or the payload portion is empty.
-fn parse_data_url(url: &str) -> Option<(String, String)> {
+fn parse_data_url(url: &str) -> Option<(&str, &str)> {
     let (header, data) = url.split_once(',')?;
-    let media = header.strip_prefix("data:")?.split(';').next()?.to_owned();
-    (!data.is_empty()).then(|| (media, data.to_owned()))
+    let media = header.strip_prefix("data:")?.split(';').next()?;
+    (!data.is_empty()).then_some((media, data))
 }
 /// Renders a JSON value as text for embedding in narrative tool-call text
 /// ([`tool_calls_to_text`]): strings pass through unchanged (no extra quoting), while any

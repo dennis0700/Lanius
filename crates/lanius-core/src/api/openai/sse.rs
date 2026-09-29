@@ -1,6 +1,6 @@
 //! SSE encoding for the OpenAI Chat Completions API.
 //!
-//! Converts Kiro's internal event stream ([`crate::upstream::stream`])
+//! Converts Kiro's internal event stream ([`crate::upstream::KiroEvent`])
 //! into `chat.completion.chunk` Server-Sent Events frames, and separately
 //! assembles the equivalent single `chat.completion` JSON response for
 //! non-streaming requests. Both paths restore original (pre-alias) tool
@@ -203,9 +203,9 @@ where
                         if first_chunk {
                             delta.insert("role".to_string(), Value::String("assistant".to_string()));
                         }
-                        yield frame(chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
+                        yield frame(&chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
                     }
-                    yield frame(error_value(&error));
+                    yield frame(&error_value(&error));
                     yield "data: [DONE]\n\n".to_string();
                     return;
                 }
@@ -230,7 +230,7 @@ where
                         delta.insert("role".to_string(), Value::String("assistant".to_string()));
                         first_chunk = false;
                     }
-                    yield frame(chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
+                    yield frame(&chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
                 }
                 KiroEvent { event_type: KiroEventType::Thinking, thinking_content: Some(thinking), .. } if !thinking.is_empty() => {
                     full_thinking_content.push_str(&thinking);
@@ -242,7 +242,7 @@ where
                         delta.insert("role".to_string(), Value::String("assistant".to_string()));
                         first_chunk = false;
                     }
-                    yield frame(chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
+                    yield frame(&chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
                 }
                 KiroEvent { event_type: KiroEventType::ToolUse, tool_use: Some(tool), .. } => tool_calls.push(tool),
                 KiroEvent { event_type: KiroEventType::Usage, usage, .. } => {
@@ -267,7 +267,7 @@ where
             if first_chunk {
                 delta.insert("role".to_string(), Value::String("assistant".to_string()));
             }
-            yield frame(chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
+            yield frame(&chunk_value(&completion_id, created, &context.model, Value::Object(delta), None, None));
         }
 
         let bracket_calls = parse_bracket_tool_calls(&full_content);
@@ -286,7 +286,7 @@ where
                 .enumerate()
                 .map(|(index, call)| tool_call_value(index, call, &context.tool_name_aliases))
                 .collect();
-            yield frame(chunk_value(
+            yield frame(&chunk_value(
                 &completion_id,
                 created,
                 &context.model,
@@ -310,7 +310,7 @@ where
             context_usage,
             metering_data.as_ref(),
         );
-        yield frame(chunk_value(
+        yield frame(&chunk_value(
             &completion_id,
             created,
             &context.model,
@@ -327,7 +327,7 @@ where
 ///
 /// Buffers the entire response via [`collect_stream_to_result`] (applying
 /// the same first-token/read timeouts as the streaming path) before delegating to
-/// [`response_value_from_result`].
+/// `response_value_from_result`.
 ///
 /// # Examples
 ///
@@ -361,7 +361,7 @@ where
         context.config.streaming_read_timeout,
     )
     .await?;
-    response_value_from_result(result, context)
+    response_value_from_result(result, &context)
 }
 
 /// Builds the non-streaming `chat.completion` response body from a
@@ -371,7 +371,7 @@ where
 /// `tool_calls`) along with computed token usage.
 fn response_value_from_result(
     mut result: StreamResult,
-    context: OpenAiFormatContext,
+    context: &OpenAiFormatContext,
 ) -> Result<Value> {
     result.content = context.tool_name_aliases.restore_text(&result.content);
     for tool in &mut result.tool_calls {
@@ -383,7 +383,7 @@ fn response_value_from_result(
         !result.tool_calls.is_empty(),
     );
     save_truncations(
-        &context,
+        context,
         &result.tool_calls,
         content_truncated,
         &result.content,
@@ -395,13 +395,20 @@ fn response_value_from_result(
     } else {
         "tool_calls"
     };
+    let usage = usage_value(
+        context,
+        &result.content,
+        &result.thinking_content,
+        result.context_usage_percentage,
+        result.usage.as_ref(),
+    );
     let mut message = Map::new();
     message.insert("role".to_string(), Value::String("assistant".to_string()));
-    message.insert("content".to_string(), Value::String(result.content.clone()));
+    message.insert("content".to_string(), Value::String(result.content));
     if !result.thinking_content.is_empty() {
         message.insert(
             "reasoning_content".to_string(),
-            Value::String(result.thinking_content.clone()),
+            Value::String(result.thinking_content),
         );
     }
     if !result.tool_calls.is_empty() {
@@ -416,13 +423,6 @@ fn response_value_from_result(
             ),
         );
     }
-    let usage = usage_value(
-        &context,
-        &result.content,
-        &result.thinking_content,
-        result.context_usage_percentage,
-        result.usage.as_ref(),
-    );
     Ok(json!({
         "id": generate_completion_id(),
         "object": "chat.completion",
@@ -447,8 +447,9 @@ fn chunk_value(
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
-        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        "choices": [{"index": 0, "delta": Value::Null, "finish_reason": finish_reason}],
     });
+    value["choices"][0]["delta"] = delta;
     if let Some(usage) = usage {
         value["usage"] = usage;
     }
@@ -470,8 +471,8 @@ fn error_value(error: &crate::error::GatewayError) -> Value {
 
 /// Formats a JSON value as a `data: ...\n\n` SSE frame using spaced JSON
 /// serialization (see [`format_json_spaced`]).
-fn frame(value: Value) -> String {
-    format!("data: {}\n\n", format_json_spaced(&value))
+fn frame(value: &Value) -> String {
+    format!("data: {}\n\n", format_json_spaced(value))
 }
 
 /// Builds a single indexed tool-call entry for a streaming `tool_calls`
@@ -557,7 +558,7 @@ fn cached_prompt_tokens(metering: &Value) -> Option<i64> {
 
 /// Persists truncation records for tool calls and/or content observed in
 /// this response, so a later turn of the same conversation can trigger
-/// recovery (see [`super::routes::inject_truncation_recovery`]). No-ops if
+/// recovery (see `routes::inject_truncation_recovery`). No-ops if
 /// truncation recovery is disabled.
 fn save_truncations(
     context: &OpenAiFormatContext,
@@ -811,12 +812,12 @@ mod tests {
     #[tokio::test]
     async fn request_scoped_aliases_round_trip_openai_conversion_sse_and_collection() {
         let original = "mcp__plugin_everything_claude_code_github__create_pull_request_review";
-        let request: crate::api::openai::models::ChatCompletionRequest = serde_json::from_value(json!({
+        let request: crate::api::ChatCompletionRequest = serde_json::from_value(json!({
             "model":"claude", "messages":[{"role":"user","content":"use the tool"}],
             "tools":[{"type":"function","function":{"name":original,"parameters":{"type":"object"}}}]
         })).unwrap_or_else(|error| panic!("fixture request must deserialize: {error}"));
         let mut aliases = ToolNameAliases::default();
-        let payload = crate::convert::openai::build_kiro_payload(
+        let payload = crate::convert::build_kiro_payload(
             &request,
             "conversation",
             None,
@@ -870,7 +871,7 @@ mod tests {
                 }],
                 ..StreamResult::default()
             },
-            context,
+            &context,
         )
         .unwrap_or_else(|error| panic!("aggregation must succeed: {error}"));
         assert_eq!(

@@ -6,18 +6,18 @@
 //! module does call into [`crate::compat::ToolNameAliases`] to alias tool names before
 //! they reach Kiro). The submodules are:
 //!
-//! - [`core`] — the provider-agnostic core: a [`core::UnifiedMessage`]/[`core::UnifiedTool`]
+//! - `core` — the provider-agnostic core: a [`core::UnifiedMessage`]/[`core::UnifiedTool`]
 //!   intermediate representation that both provider-specific converters below produce, and
 //!   [`core::build_kiro_payload`], which normalizes that representation (merging adjacent
 //!   same-role messages, ensuring the conversation starts with a user turn and alternates
 //!   roles, attaching native reasoning fields when the model supports them, handling tool
 //!   calls/results) into the final Kiro `conversationState` JSON payload.
-//! - [`openai`] — converts an OpenAI-style `ChatCompletionRequest`
-//!   (`crate::api::openai::models`) into the unified representation and then into a Kiro
+//! - `openai` — converts an OpenAI-style `ChatCompletionRequest`
+//!   (`crate::api` OpenAI models) into the unified representation and then into a Kiro
 //!   payload via [`core::build_kiro_payload`].
-//! - [`anthropic`] — the equivalent for an Anthropic-style `AnthropicMessagesRequest`
-//!   (`crate::api::anthropic::models`).
-//! - [`guards`] — protective post-processing applied to the fully built Kiro payload:
+//! - `anthropic` — the equivalent for an Anthropic-style `AnthropicMessagesRequest`
+//!   (`crate::api` Anthropic models).
+//! - `guards` — protective post-processing applied to the fully built Kiro payload:
 //!   trimming conversation history to fit a byte budget, and repairing tool-result entries
 //!   that would otherwise reference a tool call that got trimmed away (which Kiro would
 //!   reject as an "orphaned" tool result).
@@ -26,10 +26,10 @@
 //! or `anthropic::anthropic_to_kiro` to get a [`core::KiroPayloadResult`] ready to send
 //! upstream to Kiro.
 
-pub(crate) mod anthropic;
-pub(crate) mod core;
-pub(crate) mod guards;
-pub(crate) mod openai;
+mod anthropic;
+mod core;
+mod guards;
+mod openai;
 
 pub use anthropic::{
     anthropic_to_kiro, convert_anthropic_content_to_text, convert_anthropic_messages,

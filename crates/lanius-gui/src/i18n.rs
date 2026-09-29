@@ -44,6 +44,15 @@ impl Translations {
     /// `HashMap<String, String>` — this is treated as a build-time
     /// programming error (a malformed translation file shipped with the
     /// binary) rather than a recoverable runtime condition.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::i18n::Translations;
+    ///
+    /// let translations = Translations::load();
+    /// assert_eq!(translations.current(), "en");
+    /// ```
     pub fn load() -> Self {
         let tables = TABLES
             .iter()
@@ -61,6 +70,14 @@ impl Translations {
     }
 
     /// Returns the currently active language code (e.g. `"en"`, `"zh"`).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut translations = crate::i18n::Translations::load();
+    /// translations.set_language("zh");
+    /// assert_eq!(translations.current(), "zh");
+    /// ```
     pub fn current(&self) -> &'static str {
         self.current
     }
@@ -69,6 +86,14 @@ impl Translations {
     /// [`LANGUAGES`], for driving the UI's language picker selection.
     /// Defaults to `0` in the (unreachable in practice) case the current
     /// code is not found.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut translations = crate::i18n::Translations::load();
+    /// translations.set_language("zh");
+    /// assert_eq!(crate::i18n::LANGUAGES[translations.current_index()].0, "zh");
+    /// ```
     pub fn current_index(&self) -> usize {
         LANGUAGES
             .iter()
@@ -79,6 +104,15 @@ impl Translations {
     /// Switches the active language to `code`, if it is one of the
     /// supported [`LANGUAGES`]; unrecognized codes are silently ignored,
     /// leaving the previous language active.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut translations = crate::i18n::Translations::load();
+    /// translations.set_language("zh");
+    /// translations.set_language("klingon"); // ignored
+    /// assert_eq!(translations.current(), "zh");
+    /// ```
     pub fn set_language(&mut self, code: &str) {
         if let Some((known, _)) = LANGUAGES.iter().find(|(c, _)| *c == code) {
             self.current = known;
@@ -88,6 +122,14 @@ impl Translations {
     /// Switches the active language by its index into [`LANGUAGES`] (as
     /// used by the UI's language picker); an out-of-range index is
     /// silently ignored.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut translations = crate::i18n::Translations::load();
+    /// translations.set_language_by_index(1);
+    /// assert_eq!(translations.current(), crate::i18n::LANGUAGES[1].0);
+    /// ```
     pub fn set_language_by_index(&mut self, index: usize) {
         if let Some((code, _)) = LANGUAGES.get(index) {
             self.current = code;
@@ -99,6 +141,15 @@ impl Translations {
     /// `key` string itself if it's missing from every table. Returning the
     /// key rather than an empty string on a total miss makes a missing
     /// translation visibly obvious in the UI instead of rendering blank.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut translations = crate::i18n::Translations::load();
+    /// translations.set_language("zh");
+    /// assert_eq!(translations.get("tabSettings"), "设置");
+    /// assert_eq!(translations.get("no-such-key"), "no-such-key");
+    /// ```
     pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
         self.tables
             .get(self.current)
@@ -111,6 +162,14 @@ impl Translations {
     /// Looks up `key` (with the same fallback behavior as [`get`](Self::get))
     /// and substitutes each `{name}` placeholder in the resulting string
     /// with its corresponding value from `args`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let translations = crate::i18n::Translations::load();
+    /// let text = translations.format("eventsCaptured", &[("count", "42")]);
+    /// assert!(text.contains("42"));
+    /// ```
     pub fn format(&self, key: &str, args: &[(&str, &str)]) -> String {
         let mut text = self.get(key).to_string();
         for (name, value) in args {
@@ -128,6 +187,15 @@ impl Translations {
     /// active language's table on top, so a language with partial coverage
     /// still renders complete text (falling back per-key to English) rather
     /// than gaps.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut translations = crate::i18n::Translations::load();
+    /// translations.set_language("zh");
+    /// let table = translations.snapshot();
+    /// assert_eq!(table["tabSettings"], "设置");
+    /// ```
     pub fn snapshot(&self) -> HashMap<String, String> {
         let english = self.tables.get("en");
         let mut table = english.cloned().unwrap_or_default();
@@ -145,6 +213,13 @@ impl Translations {
 /// or the detected locale isn't one Lanius has translations for. Used once
 /// at first-run bootstrap, before any `language` preference has been saved
 /// to `AppConfig`.
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut translations = crate::i18n::Translations::load();
+/// translations.set_language(crate::i18n::detect_system_language());
+/// ```
 pub fn detect_system_language() -> &'static str {
     let raw = system_locale().to_ascii_lowercase();
     let primary = raw.split(['-', '_', '.']).next().unwrap_or("");
@@ -157,10 +232,17 @@ pub fn detect_system_language() -> &'static str {
 
 /// Reads the raw OS locale string using whatever mechanism is available on
 /// the current platform: on macOS, shells out to `defaults read -g
-/// AppleLocale` (spawning a subprocess); on other platforms, falls back to
-/// the POSIX `LC_ALL`/`LC_MESSAGES`/`LANG` environment variables, checked in
-/// that priority order. Returns an empty string if nothing usable is found.
+/// AppleLocale` (spawning a subprocess); on Windows, asks the OS for the
+/// user's default locale name (GUI apps there rarely see `LANG`); on every
+/// platform, then falls back to the POSIX `LC_ALL`/`LC_MESSAGES`/`LANG`
+/// environment variables, checked in that priority order. Returns an empty
+/// string if nothing usable is found.
 fn system_locale() -> String {
+    #[cfg(target_os = "windows")]
+    if let Some(value) = crate::windows::user_locale() {
+        return value;
+    }
+
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = std::process::Command::new("defaults")

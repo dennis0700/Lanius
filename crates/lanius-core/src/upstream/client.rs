@@ -169,11 +169,30 @@ impl KiroHttpClient {
     }
 
     /// Sends a `generateAssistantResponse` request, rotating across the chat
-    /// endpoints from [`chat_endpoints`]. A `429` parks the endpoint that
-    /// returned it (see [`GLOBAL_THROTTLE`]) and the request moves straight to
+    /// endpoints from `chat_endpoints`. A `429` parks the endpoint that
+    /// returned it (see `GLOBAL_THROTTLE`) and the request moves straight to
     /// the next free endpoint without consuming a retry; only when every
     /// endpoint is parked does it fall back to exponential backoff. Other
     /// statuses follow [`request_bytes_with_retry`](Self::request_bytes_with_retry).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::upstream::KiroHttpClient;
+    /// use lanius_core::Config;
+    /// use serde_json::json;
+    /// use std::sync::Arc;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = Config::default();
+    /// let auth = Arc::new(AuthManager::new(config.clone())?);
+    /// let client = KiroHttpClient::new(auth, &config)?;
+    /// let response = client.chat_request_with_retry(&json!({"conversationState": {}}), true).await?;
+    /// # let _ = response;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn chat_request_with_retry(&self, payload: &Value, stream: bool) -> Result<Response> {
         let region = self.auth_manager.region().await;
         let has_profile = self
@@ -205,7 +224,7 @@ impl KiroHttpClient {
     }
 
     /// Sends a raw-body request to `url`, retrying up to
-    /// [`max_retries`](Self::max_retries) times.
+    /// `max_retries` times.
     ///
     /// Retry policy per attempt:
     /// - `200 OK` — returned immediately.
@@ -213,7 +232,7 @@ impl KiroHttpClient {
     ///   refresh via the auth manager and retry (no backoff delay, since the
     ///   fix is a fresh token, not waiting).
     /// - `429` or any `5xx` — retried after an exponential backoff delay
-    ///   (see [`retry_delay`]); the last such response is remembered so it
+    ///   (see `retry_delay`); the last such response is remembered so it
     ///   can be surfaced if every attempt exhausts.
     /// - Any other status — returned immediately as a
     ///   [`GatewayError::Upstream`] built from the response body.

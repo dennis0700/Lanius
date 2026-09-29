@@ -5,24 +5,24 @@
 //! order: an exact-match alias table (configured externally-facing names
 //! mapped to internal ones), then [`normalize_model_name`] to canonicalize
 //! whatever spelling/versioning convention the client used, then checks the
-//! live catalog in [`crate::model::cache::ModelInfoCache`], then a
+//! live catalog in [`super::ModelInfoCache`], then a
 //! hidden-model mapping, and finally falls back to passing the normalized
 //! name through unverified. [`normalize_model_name`] itself handles the
 //! several distinct naming conventions Anthropic/Kiro have used for Claude
 //! model ids over time (see its doc comment for the full list).
 //! [`fetch_available_models`] fetches the live catalog from Kiro used to
-//! populate [`crate::model::cache::ModelInfoCache`] in the first place.
+//! populate [`super::ModelInfoCache`] in the first place.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
 
+use super::cache::ModelInfoCache;
+use super::reasoning::returns_visible_thinking;
 use crate::auth::{AuthManager, AuthType};
 use crate::config::{Config, default_hidden_from_list, default_model_aliases};
-use crate::model::cache::ModelInfoCache;
-use crate::model::reasoning::returns_visible_thinking;
-use crate::upstream::client::KiroHttpClient;
+use crate::upstream::KiroHttpClient;
 
 /// Result of resolving a client-supplied model name to a concrete Kiro model
 /// id, as returned by [`ModelResolver::resolve`].
@@ -108,7 +108,7 @@ impl ModelResolver {
 
     /// Creates a resolver using the alias table and hidden-from-list
     /// configured in `config`, with no hidden-model mapping. This is the
-    /// standard constructor used by [`crate::server::AppState::initialize`].
+    /// standard constructor used by `crate::server::AppState::initialize`.
     ///
     /// # Examples
     ///
@@ -420,12 +420,15 @@ pub async fn fetch_available_models(auth: Arc<AuthManager>, config: &Config) -> 
         return None;
     }
     let response = response.json::<Value>().await.ok()?;
-    catalog_models(&response)
+    catalog_models(response)
 }
 
 /// Extracts the `models` array from a `ListAvailableModels` response body.
-fn catalog_models(response: &Value) -> Option<Vec<Value>> {
-    response.get("models")?.as_array().cloned()
+fn catalog_models(mut response: Value) -> Option<Vec<Value>> {
+    match response.get_mut("models")?.take() {
+        Value::Array(models) => Some(models),
+        _ => None,
+    }
 }
 
 /// Canonicalizes a Claude model name into a single stable form
@@ -449,7 +452,7 @@ fn catalog_models(response: &Value) -> Option<Vec<Value>> {
 /// A model name already in canonical form, or one that matches none of the
 /// above (e.g. `gpt-4`, alias names), is returned unchanged (aside from an
 /// optional trailing `[<n><unit>]` context-size suffix, which is always
-/// stripped first via [`strip_context_suffix`]). Matching happens on a
+/// stripped first via `strip_context_suffix`). Matching happens on a
 /// lower-cased copy, but the *original* casing is what gets returned when no
 /// pattern matches — so unrecognized names round-trip byte-for-byte.
 ///
@@ -565,7 +568,10 @@ fn strip_context_suffix(name: &str) -> &str {
 // Any purely alphabetic segment counts as a family name, so new Claude
 // families (e.g. `fable`) normalize without code changes.
 fn is_family(value: &str) -> bool {
-    !value.is_empty() && value.chars().all(|character| character.is_ascii_lowercase())
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_lowercase())
 }
 
 fn is_version(value: &str) -> bool {
@@ -649,15 +655,16 @@ fn normalize_dotted_with_date(segments: &[&str]) -> Option<String> {
         return None;
     }
     let prefix = prefix.join("-");
-    let standard = prefix.strip_prefix("claude-").and_then(|suffix| {
-        let (family, version) = suffix.split_once('-')?;
-        (is_family(family) && dotted_version(version)).then_some(prefix.clone())
+    let matches = prefix.strip_prefix("claude-").is_some_and(|suffix| {
+        let standard = suffix
+            .split_once('-')
+            .is_some_and(|(family, version)| is_family(family) && dotted_version(version));
+        let legacy = suffix
+            .split_once('-')
+            .is_some_and(|(version, family)| dotted_version(version) && is_family(family));
+        standard || legacy
     });
-    let legacy = prefix.strip_prefix("claude-").and_then(|suffix| {
-        let (version, family) = suffix.split_once('-')?;
-        (dotted_version(version) && is_family(family)).then_some(prefix.clone())
-    });
-    standard.or(legacy)
+    matches.then_some(prefix)
 }
 
 fn dotted_version(value: &str) -> bool {

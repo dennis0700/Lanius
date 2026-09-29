@@ -11,11 +11,15 @@
 //!   against the `.app` bundle (not the raw executable inside it), because
 //!   login items must point at an application bundle to appear correctly in
 //!   System Settings.
+//! - On Windows, a per-user `HKCU\...\Run` registry entry points at the
+//!   raw executable (no admin rights needed).
 //! - On other platforms, the raw executable path is used directly.
 
 use auto_launch::AutoLaunch;
 #[cfg(target_os = "macos")]
 use auto_launch::MacOSLaunchMode;
+#[cfg(target_os = "windows")]
+use auto_launch::WindowsEnableMode;
 
 const APP_NAME: &str = "Lanius";
 
@@ -62,6 +66,14 @@ fn launch_target() -> Result<String, String> {
 /// folder on other platforms through the `auto_launch` crate) — it does not
 /// touch Lanius's own config file. Call sites are responsible for persisting
 /// the `auto_launch` preference separately via [`crate::config`].
+///
+/// # Examples
+///
+/// ```ignore
+/// // Register Lanius as a login item, then remove it again.
+/// crate::autostart::apply(true)?;
+/// crate::autostart::apply(false)?;
+/// ```
 pub fn apply(enabled: bool) -> Result<(), String> {
     let app_str = launch_target()?;
 
@@ -74,7 +86,16 @@ pub fn apply(enabled: bool) -> Result<(), String> {
         &[] as &[&str],
         "",
     );
-    #[cfg(not(target_os = "macos"))]
+    // Per-user `HKCU\...\Run` entry: never needs admin rights, and matches
+    // the per-user install location the Windows build targets.
+    #[cfg(target_os = "windows")]
+    let auto = AutoLaunch::new(
+        APP_NAME,
+        &app_str,
+        WindowsEnableMode::CurrentUser,
+        &[] as &[&str],
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let auto = AutoLaunch::new(APP_NAME, &app_str, &[] as &[&str]);
 
     if enabled {

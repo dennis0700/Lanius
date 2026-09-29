@@ -67,6 +67,15 @@ impl Tray {
     /// (e.g. no system tray present) or if the bundled icon image fails to
     /// decode — callers (see `main.rs`) treat failure as non-fatal and keep
     /// retrying on a timer rather than crashing the app.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::tray::{Tray, TrayLabels};
+    ///
+    /// let labels = TrayLabels { start: "Start", stop: "Stop", restart: "Restart", show: "Show", hide: "Hide", quit: "Quit" };
+    /// let tray = Tray::new(&labels)?;
+    /// ```
     pub fn new(labels: &TrayLabels<'_>) -> Result<Self, String> {
         let credit = MenuItem::new("Credit: --", false, None);
         let start = MenuItem::new(labels.start, true, None);
@@ -113,6 +122,15 @@ impl Tray {
     }
 
     /// Updates the text of every menu item (called after a language change).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::tray::TrayLabels;
+    ///
+    /// let labels = TrayLabels { start: "启动", stop: "停止", restart: "重启", show: "显示", hide: "隐藏", quit: "退出" };
+    /// tray.set_labels(&labels);
+    /// ```
     pub fn set_labels(&self, labels: &TrayLabels<'_>) {
         self.start.set_text(labels.start);
         self.stop.set_text(labels.stop);
@@ -126,6 +144,13 @@ impl Tray {
     /// menu items with whether the embedded gateway is currently running,
     /// so users cannot start an already-running server or stop a stopped
     /// one from the tray menu.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Gateway just started: disable "Start", enable "Stop"/"Restart".
+    /// tray.set_running(true);
+    /// ```
     pub fn set_running(&self, running: bool) {
         self.start.set_enabled(!running);
         self.stop.set_enabled(running);
@@ -134,6 +159,12 @@ impl Tray {
 
     /// Updates the non-interactive "Credit: ..." usage summary line shown
     /// at the top of the tray menu.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// tray.set_usage("Credit: 42%");
+    /// ```
     pub fn set_usage(&self, text: &str) {
         self.credit.set_text(text);
     }
@@ -142,6 +173,16 @@ impl Tray {
     /// [`TrayCommand`] it represents, or `None` if the id does not belong
     /// to one of this tray's known menu items (e.g. the credit line or a
     /// separator, neither of which is clickable/mapped).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+    ///     if let Some(command) = tray.command_for(&event.id) {
+    ///         handle_tray_command(command);
+    ///     }
+    /// }
+    /// ```
     pub fn command_for(&self, id: &MenuId) -> Option<TrayCommand> {
         if id == self.start.id() {
             Some(TrayCommand::StartServer)
@@ -161,10 +202,22 @@ impl Tray {
     }
 }
 
+/// Windows: loads the full-color app icon that `build.rs` embeds into the
+/// exe as resource id 1. The macOS tray image is pure white (meant to be
+/// recolored as a template image), which Windows doesn't do, so it would be
+/// invisible on a light taskbar. Requesting 32x32 lets Windows pick the
+/// closest size in the `.ico` and scale it for the current DPI.
+#[cfg(target_os = "windows")]
+fn load_icon() -> Result<tray_icon::Icon, String> {
+    tray_icon::Icon::from_resource(1, Some((32, 32)))
+        .map_err(|e| format!("Failed to load tray icon resource: {e}"))
+}
+
 /// Decodes the tray icon image bundled at compile time via
 /// `include_bytes!`, converting it to the raw RGBA buffer `tray_icon`
 /// expects. Rendered as a template image (`with_icon_as_template`) so macOS
 /// can recolor it for light/dark menu bars.
+#[cfg(not(target_os = "windows"))]
 fn load_icon() -> Result<tray_icon::Icon, String> {
     const BYTES: &[u8] = include_bytes!("../assets/tray-icon.png");
     let image = image::load_from_memory(BYTES)

@@ -16,7 +16,9 @@ use lanius_core::config::DebugMode;
 /// user-facing settings onto `lanius-core`'s config struct, so the tests
 /// below exercise the exact shape of config the GUI produces.
 fn build_config_like_desktop_app() -> Config {
-    let data_dir = std::path::PathBuf::from("/tmp/lanius-test");
+    // `temp_dir()` rather than a literal `/tmp/...`, which isn't absolute on
+    // Windows (no drive letter) and would fail the `is_absolute` check below.
+    let data_dir = std::env::temp_dir().join("lanius-test");
 
     let mut cfg = Config {
         server_host: "127.0.0.1".to_string(),

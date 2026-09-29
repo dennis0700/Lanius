@@ -8,22 +8,31 @@
 //! manual "Check for updates" button, and [`install`] (plus [`relaunch`])
 //! from the "Update & restart" action.
 //!
-//! Only macOS ships a desktop build today (see
-//! `.github/workflows/macos-build.yml`), so [`install`] is only implemented
-//! there; on every other platform it returns
-//! [`UpdaterError::UnsupportedPlatform`], and the UI falls back to opening
-//! the release's GitHub page (see [`Controller::open_release_page`] in
-//! `controller.rs`) instead of trying to install in place.
+//! In-place install is only implemented for macOS (see
+//! `.github/workflows/macos-build.yml`); on every other platform [`install`]
+//! returns [`UpdaterError::UnsupportedPlatform`], and the UI falls back to
+//! opening the release's GitHub page (see [`crate::controller::Controller::open_release_page`]
+//! in `controller.rs`) instead of trying to install in place.
+//!
+//! Windows (`.github/workflows/windows-build.yml`) takes that fallback: its
+//! [`asset_name`] lets [`check`] notice a new release as long as the
+//! release carries a Windows asset, and "Update & restart" then opens the
+//! release page for a manual download.
 
 use std::path::{Path, PathBuf};
 
-use lanius_core::update::{Asset, Release, UpdateError, Updater, extract_tar_gz, is_newer};
+#[cfg(target_os = "macos")]
+use lanius_core::update::extract_tar_gz;
+use lanius_core::update::{Asset, Release, UpdateError, Updater, is_newer};
 
 /// Everything [`install`] needs that [`check`] already had to fetch, so a
 /// single "check" -> "install" flow only ever calls the GitHub API once.
 #[derive(Debug, Clone)]
 pub struct AvailableUpdate {
     pub release: Release,
+    // Only read by the macOS in-place installer; elsewhere its presence in a
+    // release is just the signal that this platform has a build to update to.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub asset: Asset,
     pub version: semver::Version,
 }
@@ -44,18 +53,24 @@ pub enum UpdaterError {
     #[error("this platform/build has no downloadable update asset")]
     UnsupportedPlatform,
 
+    // The variants below are only constructed by the macOS installer; the
+    // same "keep the enum platform-independent" reasoning applies.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error(
         "Lanius is running from a temporary, read-only copy (macOS Gatekeeper's app translocation); \
          move Lanius.app to /Applications and reopen it before updating"
     )]
     Translocated,
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("{0} is not writable; move Lanius.app somewhere you can write to (e.g. /Applications)")]
     NotWritable(PathBuf),
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("could not determine the running app bundle's location: {0}")]
     NotABundle(String),
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("the downloaded update did not contain a valid Lanius.app bundle")]
     InvalidBundle,
 
@@ -63,13 +78,19 @@ pub enum UpdaterError {
     Io(#[from] std::io::Error),
 }
 
-/// Asset name suffix for this build's platform/architecture, matching the
-/// naming produced by `.github/workflows/macos-build.yml`
-/// (`Lanius-{version}-{suffix}.app.tar.gz`), or `None` if this build has no
-/// published update asset.
-fn asset_suffix() -> Option<&'static str> {
+/// Name of this build's published update asset for `version`, matching the
+/// naming produced by the release workflows, or `None` if this build has
+/// no published asset:
+/// - macOS: `.github/workflows/macos-build.yml`'s
+///   `Lanius-{version}-arm64.app.tar.gz` (downloaded and installed in place);
+/// - Windows: `.github/workflows/windows-build.yml`'s
+///   `Lanius-{version}-windows-x64.zip` (used only to detect that a Windows
+///   build exists for that release; see the module docs).
+fn asset_name(version: &semver::Version) -> Option<String> {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("arm64")
+        Some(format!("Lanius-{version}-arm64.app.tar.gz"))
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some(format!("Lanius-{version}-windows-x64.zip"))
     } else {
         None
     }
@@ -87,21 +108,29 @@ fn build_updater() -> Result<Updater, UpdaterError> {
 /// Returns `Ok(None)` when already up to date (including when the running
 /// platform simply isn't one this build path supports — there's nothing
 /// actionable to report either way).
+///
+/// # Examples
+///
+/// ```ignore
+/// if let Some(update) = crate::updater::check().await? {
+///     tracing::info!("update available: {}", update.version);
+/// }
+/// ```
 pub async fn check() -> Result<Option<AvailableUpdate>, UpdaterError> {
     let updater = build_updater()?;
     let release = updater.latest_release().await?;
-    let current = semver::Version::parse(lanius_core::config::APP_VERSION)
-        .expect("APP_VERSION is always valid semver (from Cargo.toml)");
+    let current = semver::Version::parse(lanius_core::config::APP_VERSION).map_err(|e| {
+        UpdateError::InvalidVersion(lanius_core::config::APP_VERSION.to_string(), e)
+    })?;
     let target = release.version()?;
 
     if !is_newer(&current, &target) {
         return Ok(None);
     }
 
-    let Some(suffix) = asset_suffix() else {
+    let Some(asset_name) = asset_name(&target) else {
         return Ok(None);
     };
-    let asset_name = format!("Lanius-{target}-{suffix}.app.tar.gz");
     let Some(asset) = release.asset(&asset_name).cloned() else {
         return Ok(None);
     };
@@ -121,6 +150,16 @@ pub async fn check() -> Result<Option<AvailableUpdate>, UpdaterError> {
 /// function does not touch the current process.
 ///
 /// Not implemented on non-macOS platforms — see the module docs.
+///
+/// # Examples
+///
+/// ```ignore
+/// if let Some(update) = crate::updater::check().await? {
+///     let bundle = crate::updater::install(&update, |done, total| {
+///         tracing::debug!("downloaded {done}/{total} bytes");
+///     }).await?;
+/// }
+/// ```
 #[cfg(target_os = "macos")]
 pub async fn install(
     update: &AvailableUpdate,
@@ -158,6 +197,14 @@ pub async fn install(
     Ok(installed)
 }
 
+/// Non-macOS stub: always fails with [`UpdaterError::UnsupportedPlatform`].
+///
+/// # Examples
+///
+/// ```ignore
+/// let result = crate::updater::install(&update, |_, _| {}).await;
+/// assert!(matches!(result, Err(crate::updater::UpdaterError::UnsupportedPlatform)));
+/// ```
 #[cfg(not(target_os = "macos"))]
 pub async fn install(
     _update: &AvailableUpdate,
@@ -179,6 +226,15 @@ pub async fn install(
 /// port/lock) would risk the new instance colliding with the old one, and
 /// `open` *without* `-n` would just refocus the still-running old instance
 /// instead of launching the new bundle.
+///
+/// # Examples
+///
+/// ```ignore
+/// let bundle = crate::updater::install(&update, |_, _| {}).await?;
+/// // ...stop the embedded gateway first, then:
+/// crate::updater::relaunch(&bundle)?;
+/// slint::quit_event_loop()?;
+/// ```
 #[cfg(target_os = "macos")]
 pub fn relaunch(path: &Path) -> Result<(), UpdaterError> {
     let pid = std::process::id();
@@ -193,6 +249,14 @@ pub fn relaunch(path: &Path) -> Result<(), UpdaterError> {
     Ok(())
 }
 
+/// Non-macOS stub: always fails with [`UpdaterError::UnsupportedPlatform`].
+///
+/// # Examples
+///
+/// ```ignore
+/// let result = crate::updater::relaunch(std::path::Path::new("/Applications/Lanius.app"));
+/// assert!(matches!(result, Err(crate::updater::UpdaterError::UnsupportedPlatform)));
+/// ```
 #[cfg(not(target_os = "macos"))]
 pub fn relaunch(_path: &Path) -> Result<(), UpdaterError> {
     Err(UpdaterError::UnsupportedPlatform)
@@ -200,17 +264,30 @@ pub fn relaunch(_path: &Path) -> Result<(), UpdaterError> {
 
 /// Opens `url` in the user's default browser, for the fallback path on
 /// platforms/situations where in-app install isn't available.
+///
+/// # Examples
+///
+/// ```ignore
+/// if let Some(update) = crate::updater::check().await? {
+///     crate::updater::open_url(&update.release.html_url);
+/// }
+/// ```
 pub fn open_url(url: &str) {
-    #[cfg(target_os = "macos")]
-    let opener = ("open", vec![url]);
     #[cfg(target_os = "windows")]
-    let opener = ("cmd", vec!["/c", "start", "", url]);
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let opener = ("xdg-open", vec![url]);
-
-    let (cmd, args) = opener;
-    if let Err(e) = std::process::Command::new(cmd).args(args).spawn() {
+    if let Err(e) = crate::windows::open_url(url) {
         tracing::warn!("failed to open {url} in a browser: {e}");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let cmd = "open";
+        #[cfg(not(target_os = "macos"))]
+        let cmd = "xdg-open";
+
+        if let Err(e) = std::process::Command::new(cmd).arg(url).spawn() {
+            tracing::warn!("failed to open {url} in a browser: {e}");
+        }
     }
 }
 
@@ -226,7 +303,9 @@ fn shell_quote(path: &Path) -> String {
 /// Removes the per-run working directory on drop, so a failed/interrupted
 /// update doesn't leave a `.lanius-update-<pid>` directory next to the app
 /// bundle.
+#[cfg(target_os = "macos")]
 struct CleanupGuard(PathBuf);
+#[cfg(target_os = "macos")]
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -374,5 +453,26 @@ mod tests {
             ensure_installable(path),
             Err(UpdaterError::Translocated)
         ));
+    }
+}
+
+/// Pins each platform's update asset name to what its release workflow
+/// uploads — a mismatch silently stops that platform from ever seeing an
+/// update, which no other test would catch.
+#[cfg(test)]
+mod asset_name_tests {
+    use super::asset_name;
+
+    #[test]
+    fn asset_name_matches_release_workflow_naming() {
+        let version = semver::Version::new(1, 2, 3);
+        let expected = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            Some("Lanius-1.2.3-arm64.app.tar.gz")
+        } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+            Some("Lanius-1.2.3-windows-x64.zip")
+        } else {
+            None
+        };
+        assert_eq!(asset_name(&version).as_deref(), expected);
     }
 }

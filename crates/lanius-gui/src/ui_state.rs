@@ -30,6 +30,13 @@ fn shared(value: Option<&String>) -> SharedString {
 
 /// Builds the Slint settings-form representation of `config`, for
 /// populating the UI when configuration is loaded or reloaded.
+///
+/// # Examples
+///
+/// ```ignore
+/// let config = crate::config::AppConfig::default();
+/// ui.set_form(crate::ui_state::form_from_config(&config));
+/// ```
 pub fn form_from_config(config: &AppConfig) -> ConfigForm {
     ConfigForm {
         auth_method: config.auth_method.as_str().into(),
@@ -50,6 +57,15 @@ pub fn form_from_config(config: &AppConfig) -> ConfigForm {
 /// non-numeric, or outside the valid `1..=65535` range — so a user's
 /// in-progress or invalid edit never produces an unusable port (e.g. `0`)
 /// for the gateway to bind to.
+///
+/// # Examples
+///
+/// ```ignore
+/// use crate::ui_state::{parse_port, FALLBACK_PORT};
+///
+/// assert_eq!(parse_port(" 8080 "), 8080);
+/// assert_eq!(parse_port("0"), FALLBACK_PORT);
+/// ```
 pub fn parse_port(raw: &str) -> u16 {
     match raw.trim().parse::<u32>() {
         Ok(value) if (1..=65535).contains(&value) => value as u16,
@@ -74,6 +90,15 @@ fn optional(value: &str) -> Option<String> {
 /// does not expose (region, timeouts, debug mode, client id, language,
 /// etc.) via the `..config.clone()` spread. This is the inverse of
 /// [`form_from_config`] for the fields both cover.
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut form = crate::ui_state::form_from_config(&config);
+/// form.lan_access = true;
+/// let updated = crate::ui_state::apply_form(&config, &form);
+/// assert_eq!(updated.server_host, "0.0.0.0");
+/// ```
 pub fn apply_form(config: &AppConfig, form: &ConfigForm) -> AppConfig {
     AppConfig {
         auth_method: AuthMethod::from_str_or_default(form.auth_method.as_str()),
@@ -98,6 +123,13 @@ pub fn apply_form(config: &AppConfig, form: &ConfigForm) -> AppConfig {
 /// the UI knows to show a loading/placeholder state rather than stale
 /// figures, while `loading`/`error` reflect whether a fetch is currently in
 /// flight or previously failed.
+///
+/// # Examples
+///
+/// ```ignore
+/// // A usage fetch is in flight:
+/// ui.set_usage(crate::ui_state::usage_placeholder(true, ""));
+/// ```
 pub fn usage_placeholder(loading: bool, error: &str) -> UsageView {
     UsageView {
         loaded: false,
@@ -112,6 +144,15 @@ pub fn usage_placeholder(loading: bool, error: &str) -> UsageView {
 /// "Kiro" branding is redundant once shown inside a Lanius/Kiro-branded UI.
 /// Plan names without that prefix are returned trimmed but otherwise
 /// unchanged.
+///
+/// # Examples
+///
+/// ```ignore
+/// use crate::ui_state::short_plan;
+///
+/// assert_eq!(short_plan("KIRO PRO MAX"), "PRO MAX");
+/// assert_eq!(short_plan(" Free "), "Free");
+/// ```
 pub fn short_plan(plan: &str) -> &str {
     let trimmed = plan.trim();
     trimmed
@@ -127,6 +168,13 @@ pub fn short_plan(plan: &str) -> &str {
 /// [`fmt_thousands`] and deriving `has_quota` from whether a usage limit is
 /// actually known (a plan with no limit info shouldn't render a "0 used"
 /// progress bar).
+///
+/// # Examples
+///
+/// ```ignore
+/// let summary = crate::api::fetch_usage("127.0.0.1", 8000, &api_key).await?;
+/// ui.set_usage(crate::ui_state::usage_view(&summary));
+/// ```
 pub fn usage_view(summary: &UsageSummary) -> UsageView {
     UsageView {
         loaded: true,
@@ -146,6 +194,14 @@ pub fn usage_view(summary: &UsageSummary) -> UsageView {
 
 /// Converts processed log lines into Slint `LogRow` values for binding to
 /// the log list model.
+///
+/// # Examples
+///
+/// ```ignore
+/// let processed = crate::logs::process(&buffer.get_all());
+/// let rows = crate::ui_state::log_rows(&processed);
+/// ui.set_logs(slint::ModelRc::new(slint::VecModel::from(rows)));
+/// ```
 pub fn log_rows(processed: &[ProcessedLog]) -> Vec<LogRow> {
     processed
         .iter()

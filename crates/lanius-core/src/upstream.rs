@@ -1,19 +1,19 @@
 //! Kiro upstream HTTP client, AWS event-stream parsing, and unified stream
 //! events.
 //!
-//! [`KiroHttpClient`] (in [`client`]) sends converted requests to Kiro over
-//! HTTP with retry/backoff and token refresh. [`parser`] decodes Kiro's raw
+//! [`KiroHttpClient`] (in `client`) sends converted requests to Kiro over
+//! HTTP with retry/backoff and token refresh. `parser` decodes Kiro's raw
 //! AWS event-stream response bytes (including bracket-style
 //! `[Called ... with args: {...}]` tool calls and native
-//! `reasoningContentEvent` thinking) into structured events. [`stream`]
+//! `reasoningContentEvent` thinking) into structured events. `stream`
 //! wraps the parser to produce the crate-wide [`KiroEvent`] stream that the
 //! API route handlers in [`crate::api`] convert into OpenAI/Anthropic-shaped
 //! responses.
 
-pub(crate) mod client;
-pub(crate) mod endpoint;
-pub(crate) mod parser;
-pub(crate) mod stream;
+mod client;
+mod endpoint;
+mod parser;
+mod stream;
 
 pub use client::KiroHttpClient;
 pub use parser::{

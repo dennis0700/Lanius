@@ -28,6 +28,13 @@ impl AuthMethod {
     /// Returns the stable string identifier used both in serialized JSON
     /// (implicitly, via the `snake_case` derive) and in the settings form's
     /// UI value, so this and the `serde` representation must stay in sync.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::config::AuthMethod;
+    /// assert_eq!(AuthMethod::CliDb.as_str(), "cli_db");
+    /// ```
     pub fn as_str(self) -> &'static str {
         match self {
             AuthMethod::RefreshToken => "refresh_token",
@@ -40,6 +47,14 @@ impl AuthMethod {
     /// [`AuthMethod::RefreshToken`] for any unrecognized value rather than
     /// failing, since this is used to interpret user-editable form input
     /// that must never panic.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::config::AuthMethod;
+    /// assert_eq!(AuthMethod::from_str_or_default("creds_file"), AuthMethod::CredsFile);
+    /// assert_eq!(AuthMethod::from_str_or_default("nonsense"), AuthMethod::RefreshToken);
+    /// ```
     pub fn from_str_or_default(raw: &str) -> Self {
         match raw {
             "creds_file" => AuthMethod::CredsFile,
@@ -131,6 +146,15 @@ impl AppConfig {
     /// relevant to the active auth method is checked; a stale value left
     /// over in an unused field (e.g. a `refresh_token` set while
     /// `auth_method` is `CliDb`) is intentionally ignored.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut config = crate::config::AppConfig::default();
+    /// assert!(!config.has_credentials());
+    /// config.refresh_token = Some("token".to_string());
+    /// assert!(config.has_credentials());
+    /// ```
     pub fn has_credentials(&self) -> bool {
         match self.auth_method {
             AuthMethod::RefreshToken => self.refresh_token.as_ref().is_some_and(|t| !t.is_empty()),
@@ -147,6 +171,13 @@ impl AppConfig {
     /// rewriting the wildcard bind address `0.0.0.0` to the loopback
     /// address `127.0.0.1` since `0.0.0.0` is a valid bind address but not
     /// a valid address to open a client connection to.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let config = crate::config::AppConfig { server_host: "0.0.0.0".to_string(), ..Default::default() };
+    /// assert_eq!(config.probe_host(), "127.0.0.1");
+    /// ```
     pub fn probe_host(&self) -> &str {
         if self.server_host == "0.0.0.0" {
             "127.0.0.1"
@@ -165,6 +196,14 @@ impl AppConfig {
 /// unrelated but sufficiently random source for this purpose) rather than a
 /// dedicated CSPRNG, mapping each random byte into the allowed alphanumeric
 /// character set.
+///
+/// # Examples
+///
+/// ```ignore
+/// let key = crate::config::generate_api_key();
+/// assert!(key.starts_with("sk-"));
+/// assert_eq!(key.len(), 35);
+/// ```
 pub fn generate_api_key() -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut out = String::with_capacity(35);
@@ -184,6 +223,13 @@ pub fn generate_api_key() -> String {
 /// (`dirs::data_dir()/lanius`) under which the config file, credentials
 /// cache, and debug logs are stored. Does not create the directory; callers
 /// that need it to exist (e.g. [`save_config_to`]) create it on demand.
+///
+/// # Examples
+///
+/// ```ignore
+/// let data_dir = crate::config::get_app_data_dir()?;
+/// let debug_dir = data_dir.join("debug_logs");
+/// ```
 pub fn get_app_data_dir() -> Result<PathBuf, String> {
     Ok(dirs::data_dir()
         .ok_or("Failed to get app data directory")?
@@ -199,6 +245,13 @@ fn get_config_path() -> Result<PathBuf, String> {
 /// yet (first run). A config file that exists but fails to parse is
 /// reported as an error rather than silently discarded, so a corrupted
 /// config is never overwritten with defaults without the caller knowing.
+///
+/// # Examples
+///
+/// ```ignore
+/// let config = crate::config::load_config().await?;
+/// println!("gateway port: {}", config.server_port);
+/// ```
 pub async fn load_config() -> Result<AppConfig, String> {
     load_config_from(&get_config_path()?).await
 }
@@ -222,6 +275,14 @@ pub(crate) async fn load_config_from(config_path: &std::path::Path) -> Result<Ap
 /// JSON, creating the parent application data directory if it does not yet
 /// exist. This performs real filesystem writes and should be called from an
 /// async context (it uses `tokio::fs`), never assumed to be instantaneous.
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut config = crate::config::load_config().await?;
+/// config.server_port = 9000;
+/// crate::config::save_config(&config).await?;
+/// ```
 pub async fn save_config(config: &AppConfig) -> Result<(), String> {
     save_config_to(&get_config_path()?, config).await
 }
@@ -269,6 +330,15 @@ pub struct CredentialScan {
 /// CLI login is a stronger signal of an active, already-authenticated
 /// session — reflected in [`recommended_method`](CredentialScan::recommended_method)
 /// checking `cli_dbs` first.
+///
+/// # Examples
+///
+/// ```ignore
+/// let scan = crate::config::scan_all_credentials()?;
+/// if let (Some(method), Some(path)) = (scan.recommended_method, scan.recommended_path) {
+///     println!("suggest {} at {path}", method.as_str());
+/// }
+/// ```
 pub fn scan_all_credentials() -> Result<CredentialScan, String> {
     let home = dirs::home_dir().ok_or("Failed to get home directory")?;
     let data_dir = dirs::data_local_dir().ok_or("Failed to get data directory")?;
@@ -281,12 +351,20 @@ pub fn scan_all_credentials() -> Result<CredentialScan, String> {
         PathBuf::from("/etc/kiro/kiro-credentials.json"),
     ]);
 
-    let cli_dbs = existing_paths([
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
+    let mut cli_db_candidates = vec![
         data_dir.join("kiro-cli/data.sqlite3"),
         home.join(".local/share/kiro-cli/data.sqlite3"),
         home.join(".config/kiro-cli/data.sqlite3"),
         home.join(".kiro-cli/data.sqlite3"),
-    ]);
+    ];
+    // `data_local_dir()` above is `%LOCALAPPDATA%` on Windows; also check
+    // the roaming `%APPDATA%` in case kiro-cli stores its database there.
+    #[cfg(target_os = "windows")]
+    if let Some(roaming) = dirs::data_dir() {
+        cli_db_candidates.push(roaming.join("kiro-cli").join("data.sqlite3"));
+    }
+    let cli_dbs = existing_paths(cli_db_candidates);
 
     let (recommended_method, recommended_path) = if let Some(first) = cli_dbs.first() {
         (Some(AuthMethod::CliDb), Some(first.clone()))
@@ -308,7 +386,7 @@ pub fn scan_all_credentials() -> Result<CredentialScan, String> {
 /// converting each surviving `PathBuf` to a UTF-8 `String` (silently
 /// dropping any path that is not valid UTF-8, which should not occur for
 /// the fixed ASCII candidate paths this is used with).
-fn existing_paths<const N: usize>(candidates: [PathBuf; N]) -> Vec<String> {
+fn existing_paths(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
     candidates
         .into_iter()
         .filter(|p| p.exists())
@@ -330,6 +408,15 @@ fn existing_paths<const N: usize>(candidates: [PathBuf; N]) -> Vec<String> {
 /// as a warning and treated as "nothing found" rather than propagated,
 /// since bootstrap must be able to proceed even without auto-discovered
 /// credentials.
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut config = crate::config::load_config().await?;
+/// if crate::config::ensure_defaults(&mut config) {
+///     crate::config::save_config(&config).await?;
+/// }
+/// ```
 pub fn ensure_defaults(config: &mut AppConfig) -> bool {
     let mut changed = false;
 

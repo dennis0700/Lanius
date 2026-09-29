@@ -10,14 +10,14 @@
 //! [`crate::convert`]) to approximate the number of prompt tokens that will
 //! be sent upstream. [`calculate_tokens_from_context_usage`] instead derives
 //! token counts from Kiro's own `contextUsagePercentage` signal when
-//! available, consulting [`crate::model::cache::ModelInfoCache`] for the
+//! available, consulting [`crate::model::ModelInfoCache`] for the
 //! model's context window size.
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::model::cache::ModelInfoCache;
+use crate::model::ModelInfoCache;
 
 /// Empirical multiplier applied to `cl100k_base` token counts to better
 /// approximate Claude's own tokenizer, which tends to use more tokens per
@@ -69,7 +69,7 @@ pub struct ContextUsageTokens {
 }
 
 /// Estimates the number of tokens in a plain text string using
-/// `cl100k_base` (falling back to [`rough_token_estimate`] if unavailable),
+/// `cl100k_base` (falling back to `rough_token_estimate` if unavailable),
 /// optionally applying [`CLAUDE_TOKEN_CORRECTION_FACTOR`].
 ///
 /// # Examples
@@ -340,9 +340,9 @@ fn count_content(content: &Value) -> usize {
 // structured fields individually rather than as one opaque JSON blob, so
 // that e.g. a large tool result doesn't get double-counted via its
 // surrounding envelope.
-fn count_content_block(item: &Value) -> usize {
-    let Some(item) = item.as_object() else {
-        return count_value_as_text(item);
+fn count_content_block(value: &Value) -> usize {
+    let Some(item) = value.as_object() else {
+        return count_value_as_text(value);
     };
     match item.get("type").and_then(Value::as_str) {
         Some("text") => count_string(item.get("text")),
@@ -380,7 +380,7 @@ fn count_content_block(item: &Value) -> usize {
         // Unknown block types are still counted (via their JSON form) rather
         // than silently ignored, so estimates never drop to zero for
         // forward-compatible/unrecognized block shapes.
-        _ => count_tokens(&format_json_spaced(&Value::Object(item.clone())), false),
+        _ => count_tokens(&format_json_spaced(value), false),
     }
 }
 
