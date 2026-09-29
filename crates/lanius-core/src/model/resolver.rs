@@ -562,8 +562,10 @@ fn strip_context_suffix(name: &str) -> &str {
     }
 }
 
+// Any purely alphabetic segment counts as a family name, so new Claude
+// families (e.g. `fable`) normalize without code changes.
 fn is_family(value: &str) -> bool {
-    matches!(value, "haiku" | "sonnet" | "opus")
+    !value.is_empty() && value.chars().all(|character| character.is_ascii_lowercase())
 }
 
 fn is_version(value: &str) -> bool {
@@ -733,6 +735,10 @@ mod tests {
             ("gpt-4", "gpt-4"),
             ("AUTO-KIRO", "AUTO-KIRO"),
             ("claude-sonnet-4-5[200k]", "claude-sonnet-4.5"),
+            ("claude-fable-5-1", "claude-fable-5.1"),
+            ("claude-fable-5", "claude-fable-5"),
+            ("claude-5.1-fable-high", "claude-fable-5.1"),
+            ("claude-instant-1", "claude-instant-1"),
         ] {
             assert_eq!(normalize_model_name(input), expected, "{input}");
         }
