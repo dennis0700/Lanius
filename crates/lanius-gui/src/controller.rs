@@ -131,6 +131,14 @@ impl Controller {
     /// controller never keeps the window alive on its own), the initial
     /// `translations` table, and the `logs` buffer the embedded gateway
     /// will write its own status lines into once started.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::{controller::Controller, i18n::Translations, log_capture::LogBuffer};
+    /// let ui = crate::MainWindow::new()?;
+    /// let controller = Controller::new(&ui, Translations::load(), LogBuffer::new());
+    /// ```
     pub fn new(ui: &MainWindow, translations: Translations, logs: LogBuffer) -> Arc<Self> {
         Arc::new(Self {
             ui: ui.as_weak(),
@@ -198,6 +206,13 @@ impl Controller {
     /// Returns the current set of localized tray menu labels, used by
     /// `main.rs` when first constructing the tray icon (before any queued
     /// update exists to pull labels from).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let labels = controller.tray_labels();
+    /// let tray = crate::tray::Tray::new(&crate::controller::Controller::tray_labels_ref(&labels))?;
+    /// ```
     pub fn tray_labels(&self) -> [String; 6] {
         [
             self.t("startServer"),
@@ -213,6 +228,14 @@ impl Controller {
     /// [`tray_labels`](Self::tray_labels) or the staged `TrayShared::labels`)
     /// as a [`TrayLabels`] struct `tray.rs`'s API expects, in the fixed
     /// start/stop/restart/show/hide/quit order both sides agree on.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let labels: [String; 6] = controller.tray_labels();
+    /// let refs = crate::controller::Controller::tray_labels_ref(&labels);
+    /// assert_eq!(refs.start, labels[0]);
+    /// ```
     pub fn tray_labels_ref<'a>(labels: &'a [String; 6]) -> TrayLabels<'a> {
         TrayLabels {
             start: &labels[0],
@@ -260,6 +283,14 @@ impl Controller {
     /// the embedded gateway (with its own network/process side effects) —
     /// it is meant to be called exactly once, spawned from `main.rs`
     /// immediately after `Controller::new`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let controller = crate::controller::Controller::new(&ui, translations, log_buffer);
+    /// let c = std::sync::Arc::clone(&controller);
+    /// tokio::spawn(async move { c.bootstrap().await });
+    /// ```
     pub async fn bootstrap(self: &Arc<Self>) {
         let (mut config, config_readable) = match config::load_config().await {
             Ok(config) => (config, true),
@@ -270,25 +301,19 @@ impl Controller {
                 // default for this session, but remember `config_readable =
                 // false` so nothing gets persisted until the user fixes it.
                 tracing::error!("failed to load config, not overwriting it: {e}");
-                let message = e.clone();
-                self.with_ui(move |ui| ui.set_config_error(message.into()));
+                self.with_ui(move |ui| ui.set_config_error(e.into()));
                 (AppConfig::default(), false)
             }
         };
 
         let mut needs_save = config::ensure_defaults(&mut config) && config_readable;
 
-        let language = match config.language.clone() {
-            Some(code) if !code.is_empty() => code,
-            _ => {
-                let detected = crate::i18n::detect_system_language().to_string();
-                config.language = Some(detected.clone());
-                needs_save = config_readable;
-                detected
-            }
-        };
+        if config.language.as_deref().is_none_or(str::is_empty) {
+            config.language = Some(crate::i18n::detect_system_language().to_string());
+            needs_save = config_readable;
+        }
         if let Ok(mut tr) = self.translations.lock() {
-            tr.set_language(&language);
+            tr.set_language(config.language.as_deref().unwrap_or_default());
         }
 
         if needs_save {
@@ -433,6 +458,13 @@ impl Controller {
     /// automatic recovery pass via
     /// [`try_auto_recover_start`](Self::try_auto_recover_start) before
     /// giving up and surfacing the error to the UI.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let c = std::sync::Arc::clone(&controller);
+    /// tokio::spawn(async move { c.start_server().await });
+    /// ```
     pub async fn start_server(self: &Arc<Self>) {
         let config = self.current_config().await;
 
@@ -454,7 +486,7 @@ impl Controller {
 
         let start_result = {
             let mut server = self.server.lock().await;
-            server.start(config.clone()).await
+            server.start(&config).await
         };
 
         match start_result {
@@ -515,6 +547,13 @@ impl Controller {
     /// Stops the embedded gateway (a no-op if it isn't running) and clears
     /// runtime-only UI state (model list, usage card) that no longer
     /// applies once the gateway is down.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let c = std::sync::Arc::clone(&controller);
+    /// tokio::spawn(async move { c.stop_server().await });
+    /// ```
     pub async fn stop_server(self: &Arc<Self>) {
         {
             self.state.lock().await.pending = Some(Pending::Stop);
@@ -537,6 +576,13 @@ impl Controller {
     /// give the OS a chance to actually release the port before rebinding
     /// it), used both by the manual "Restart" action and after saving
     /// configuration changes that require a restart to take effect.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let c = std::sync::Arc::clone(&controller);
+    /// tokio::spawn(async move { c.restart_server().await });
+    /// ```
     pub async fn restart_server(self: &Arc<Self>) {
         self.with_ui(|ui| ui.set_is_restarting(true));
         let config = self.current_config().await;
@@ -653,7 +699,7 @@ impl Controller {
         tokio::time::sleep(Duration::from_millis(400)).await;
         let started = {
             let mut server = self.server.lock().await;
-            server.start(config.clone()).await.is_ok()
+            server.start(config).await.is_ok()
         };
         if !started {
             return false;
@@ -674,6 +720,14 @@ impl Controller {
     /// has published a baseline form (`form_published`), so spurious
     /// change events during startup don't flag "unsaved changes" against a
     /// config that hasn't loaded yet.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let form = ui.get_form();
+    /// let c = std::sync::Arc::clone(&controller);
+    /// tokio::spawn(async move { c.form_changed(form).await });
+    /// ```
     pub async fn form_changed(&self, form: ConfigForm) {
         if !self.form_published().await {
             return;
@@ -701,6 +755,14 @@ impl Controller {
     /// running, the success indicator auto-clears itself after 3 seconds
     /// via a background task. Ignored (with a warning) if the initial
     /// config load hasn't published a baseline form yet.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let form = ui.get_form();
+    /// let c = std::sync::Arc::clone(&controller);
+    /// tokio::spawn(async move { c.save_config(form).await });
+    /// ```
     pub async fn save_config(self: &Arc<Self>, form: ConfigForm) {
         if !self.form_published().await {
             tracing::warn!("ignoring save: configuration has not finished loading");
@@ -766,28 +828,35 @@ impl Controller {
     /// currently selected API example snippet from the latest config, and
     /// pushes both into the UI. Called after bootstrap, after every
     /// config save, and whenever the selected flavor/snippet tab changes.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// controller.refresh_example().await;
+    /// ```
     pub async fn refresh_example(&self) {
-        let (config, flavor, snippet) = {
+        let (code, display) = {
             let state = self.state.lock().await;
-            (state.config.clone(), state.api_flavor, state.snippet)
+            let config = &state.config;
+            let flavor = ApiFlavor::from_index(state.api_flavor);
+            let snippet = Snippet::from_index(state.snippet);
+            let code = examples::render(
+                flavor,
+                snippet,
+                &config.server_host,
+                config.server_port,
+                &config.proxy_api_key,
+            );
+            let masked_key = examples::mask_key(&config.proxy_api_key);
+            let display = examples::render(
+                flavor,
+                snippet,
+                &config.server_host,
+                config.server_port,
+                &masked_key,
+            );
+            (code, display)
         };
-        let flavor = ApiFlavor::from_index(flavor);
-        let snippet = Snippet::from_index(snippet);
-        let code = examples::render(
-            flavor,
-            snippet,
-            &config.server_host,
-            config.server_port,
-            &config.proxy_api_key,
-        );
-        let masked_key = examples::mask_key(&config.proxy_api_key);
-        let display = examples::render(
-            flavor,
-            snippet,
-            &config.server_host,
-            config.server_port,
-            &masked_key,
-        );
         self.with_ui(move |ui| {
             ui.set_example_code(code.into());
             ui.set_example_code_display(display.into());
@@ -796,6 +865,13 @@ impl Controller {
 
     /// Records the user's chosen API-flavor/snippet-language tab and
     /// regenerates the displayed example accordingly.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Select the second API flavor and the first snippet language.
+    /// controller.set_example_selection(1, 0).await;
+    /// ```
     pub async fn set_example_selection(&self, flavor: i32, snippet: i32) {
         {
             let mut state = self.state.lock().await;
@@ -812,6 +888,13 @@ impl Controller {
     /// choice survives a restart. Also triggers an immediate log/status
     /// poll so any log lines rendered during this call reflect the new
     /// language's formatting where relevant.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Switch to the language at index 1 of `crate::i18n::LANGUAGES`.
+    /// controller.set_language(1).await;
+    /// ```
     pub async fn set_language(self: &Arc<Self>, index: i32) {
         if let Ok(mut tr) = self.translations.lock() {
             tr.set_language_by_index(index.max(0) as usize);
@@ -852,9 +935,9 @@ impl Controller {
     /// in-flight manual operation over the UI's starting/stopping
     /// indicators.
     async fn poll_logs_and_status(&self) {
-        let (lines, status) = {
+        let (lines, running) = {
             let server = self.server.lock().await;
-            (server.get_logs(), server.get_status())
+            (server.get_logs(), server.get_status().status == "running")
         };
 
         let signature = (lines.len(), lines.last().cloned().unwrap_or_default());
@@ -876,8 +959,6 @@ impl Controller {
                 ui.set_logs_count_text(count_text.into());
             });
         }
-
-        let running = status.status == "running";
 
         if self.state.lock().await.pending.is_none() {
             self.apply_running(running);
@@ -903,20 +984,33 @@ impl Controller {
     /// already-displayed summary is left showing rather than being
     /// replaced with an error, since stale-but-real numbers are more
     /// useful than an error message.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Manual refresh: a single attempt, no startup retries.
+    /// controller.refresh_usage(false).await;
+    /// ```
     pub async fn refresh_usage(self: &Arc<Self>, initial: bool) {
         let config = self.current_config().await;
         if config.proxy_api_key.is_empty() || !self.is_running().await {
             return;
         }
 
-        let existing = self.state.lock().await.usage.clone();
-        let already_loaded = existing.is_some();
-        if !already_loaded {
-            self.with_ui(|ui| ui.set_usage(usage_placeholder(true, "")));
-        } else if let Some(summary) = existing {
-            let mut view = ui_state::usage_view(&summary);
-            view.loading = true;
-            self.with_ui(move |ui| ui.set_usage(view));
+        let existing_view = self
+            .state
+            .lock()
+            .await
+            .usage
+            .as_ref()
+            .map(ui_state::usage_view);
+        let already_loaded = existing_view.is_some();
+        match existing_view {
+            None => self.with_ui(|ui| ui.set_usage(usage_placeholder(true, ""))),
+            Some(mut view) => {
+                view.loading = true;
+                self.with_ui(move |ui| ui.set_usage(view));
+            }
         }
 
         let attempts = if initial { 5 } else { 1 };
@@ -943,8 +1037,14 @@ impl Controller {
                         if !already_loaded {
                             self.with_ui(move |ui| ui.set_usage(usage_placeholder(false, &e)));
                         } else {
-                            if let Some(summary) = self.state.lock().await.usage.clone() {
-                                let view = ui_state::usage_view(&summary);
+                            let view = self
+                                .state
+                                .lock()
+                                .await
+                                .usage
+                                .as_ref()
+                                .map(ui_state::usage_view);
+                            if let Some(view) = view {
                                 self.with_ui(move |ui| ui.set_usage(view));
                             }
                         }
@@ -961,6 +1061,12 @@ impl Controller {
     /// running. Failures are logged at debug level and otherwise silent
     /// (leaving whatever model list was previously shown, if any), since a
     /// model list is a secondary, non-critical piece of the dashboard.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// controller.refresh_models().await;
+    /// ```
     pub async fn refresh_models(&self) {
         let config = self.current_config().await;
         if config.proxy_api_key.is_empty() || !self.is_running().await {
@@ -1000,6 +1106,13 @@ impl Controller {
     /// Runs at application shutdown (after the Slint event loop exits):
     /// stops the embedded gateway so it doesn't linger as an orphaned
     /// in-process task once the GUI process itself is about to exit.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// slint::run_event_loop_until_quit()?;
+    /// runtime.block_on(controller.shutdown());
+    /// ```
     pub async fn shutdown(self: &Arc<Self>) {
         let mut server = self.server.lock().await;
         let _ = server.stop().await;
@@ -1013,6 +1126,13 @@ impl Controller {
     /// visibility, whereas `Quit` first runs a full [`shutdown`](Self::shutdown)
     /// before staging the quit request, so the gateway is stopped cleanly
     /// before the event loop actually exits.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::tray::TrayCommand;
+    /// controller.handle_tray_command(TrayCommand::RestartServer).await;
+    /// ```
     pub async fn handle_tray_command(self: &Arc<Self>, command: TrayCommand) {
         match command {
             TrayCommand::StartServer => self.start_server().await,
@@ -1029,6 +1149,13 @@ impl Controller {
 
     /// Returns the full captured log buffer as ANSI-stripped plain text,
     /// for the "export logs" file-save action in `main.rs`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let text = controller.export_text().await;
+    /// tokio::fs::write("lanius-logs.txt", text).await?;
+    /// ```
     pub async fn export_text(&self) -> String {
         let server = self.server.lock().await;
         logs::export_text(&server.get_logs())
@@ -1039,6 +1166,12 @@ impl Controller {
     /// buffer is now empty), then immediately re-polls so the UI's log
     /// view reflects the clear right away rather than waiting for the next
     /// scheduled tick.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// controller.clear_logs().await;
+    /// ```
     pub async fn clear_logs(&self) {
         {
             let mut server = self.server.lock().await;
@@ -1080,6 +1213,13 @@ impl Controller {
     /// "Check Now" button in Settings. Failures are logged and reflected in
     /// the UI's error text, but otherwise non-fatal — an update check is a
     /// convenience, never something that should block or crash the app.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let c = std::sync::Arc::clone(&controller);
+    /// tokio::spawn(async move { c.check_for_updates().await });
+    /// ```
     pub async fn check_for_updates(self: &Arc<Self>) {
         {
             let mut state = self.state.lock().await;
@@ -1113,6 +1253,13 @@ impl Controller {
     /// docs — anything other than a normally-installed macOS app bundle),
     /// falls back to opening the release's GitHub page in a browser so the
     /// user can still update manually.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// controller.check_for_updates().await;
+    /// controller.install_update().await;
+    /// ```
     pub async fn install_update(self: &Arc<Self>) {
         let Some(update) = self.state.lock().await.update.available.clone() else {
             return;
@@ -1175,8 +1322,14 @@ impl Controller {
     /// Opens the GitHub release page in a browser for the currently known
     /// available update, if any — the fallback action when an in-app
     /// install can't proceed (unsupported platform, permission failure).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// controller.open_release_page().await;
+    /// ```
     pub async fn open_release_page(&self) {
-        if let Some(update) = self.state.lock().await.update.available.clone() {
+        if let Some(update) = self.state.lock().await.update.available.as_ref() {
             updater::open_url(&update.release.html_url);
         }
     }
@@ -1187,6 +1340,12 @@ impl Controller {
 /// button click where there is no meaningful recovery action beyond
 /// letting the user know via logs if the platform clipboard is
 /// unavailable.
+///
+/// # Examples
+///
+/// ```ignore
+/// crate::controller::copy_to_clipboard("claude-sonnet-4-6");
+/// ```
 pub fn copy_to_clipboard(text: &str) {
     match arboard::Clipboard::new() {
         Ok(mut clipboard) => {

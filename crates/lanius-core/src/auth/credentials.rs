@@ -290,11 +290,12 @@ impl Credentials {
         };
         match serde_json::from_str::<Value>(&raw)
             .ok()
-            .and_then(|value| value.as_object().cloned())
+            .as_ref()
+            .and_then(Value::as_object)
         {
             Some(object) => {
-                merge_string(&object, "clientId", &mut self.client_id);
-                merge_string(&object, "clientSecret", &mut self.client_secret);
+                merge_string(object, "clientId", &mut self.client_id);
+                merge_string(object, "clientSecret", &mut self.client_secret);
             }
             None => {
                 tracing::warn!(path = %path.display(), "invalid Enterprise device registration JSON")
@@ -372,7 +373,7 @@ fn merge_string(object: &Map<String, Value>, field: &str, target: &mut Option<St
 /// Wraps a low-level `rusqlite` error as a [`GatewayError::Sqlite`], without embedding any
 /// query parameters (which could include credential values) beyond the driver's own error
 /// message.
-pub(crate) fn sqlite_error(error: rusqlite::Error) -> GatewayError {
+pub(crate) fn sqlite_error(error: &rusqlite::Error) -> GatewayError {
     GatewayError::Sqlite(error.to_string())
 }
 

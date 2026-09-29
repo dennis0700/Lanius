@@ -117,7 +117,10 @@ Release. See [`docs/deployment.md`](docs/deployment.md) for installing
   Settings), or click "Check Now" there to check on demand. When a newer
   version is found, click "Update & Restart" to download, verify, and
   install it. See [`docs/gui.md`](docs/gui.md) for how this works under the
-  hood.
+  hood. The Windows build (`Lanius-<version>-windows-x64.zip`, portable —
+  unzip and run) also notifies you of new releases, but doesn't install in
+  place yet: "Update & Restart" opens the release page for a manual
+  download.
 - **CLI (`lanius`)**: run `lanius update` to check for and install the
   latest release in place (`lanius update --check` to only check,
   `lanius update -y` to skip the confirmation prompt). See

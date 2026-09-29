@@ -1,7 +1,7 @@
 //! Converts an Anthropic-shaped `Messages` API request into a Kiro request payload.
 //!
 //! This is the Anthropic-specific half of the [`super`] conversion pipeline (mirroring
-//! [`super::openai`] for OpenAI-shaped requests): it translates `crate::api::anthropic::models`
+//! [`super::openai`] for OpenAI-shaped requests): it translates `crate::api` Anthropic model
 //! types into [`super::core::UnifiedMessage`]/[`super::core::UnifiedTool`], then delegates
 //! to [`super::core::build_kiro_payload`] for the provider-agnostic normalization and
 //! payload assembly.
@@ -10,9 +10,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use super::core::{self, UnifiedImage, UnifiedMessage, UnifiedTool};
-use crate::api::anthropic::models::{
-    AnthropicMessage, AnthropicMessageContent, AnthropicMessageRole, AnthropicMessagesRequest,
-    AnthropicTool, ContentBlock, ImageSource, SystemPrompt, ToolResultContent,
+use crate::api::{
+    AnthropicContentBlock as ContentBlock, AnthropicImageSource as ImageSource, AnthropicMessage,
+    AnthropicMessageContent, AnthropicMessageRole, AnthropicMessagesRequest, AnthropicTool,
+    AnthropicToolResultContent as ToolResultContent, SystemPrompt,
 };
 use crate::compat::ToolNameAliases;
 use crate::config::Config;
@@ -38,7 +39,7 @@ pub fn convert_anthropic_content_to_text(content: &AnthropicMessageContent) -> S
         AnthropicMessageContent::Blocks(blocks) => blocks
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text(text) => Some(text.text.clone()),
+                ContentBlock::Text(text) => Some(text.text.as_str()),
                 _ => None,
             })
             .collect(),
@@ -68,7 +69,7 @@ pub fn extract_system_prompt(system: Option<&SystemPrompt>) -> String {
         Some(SystemPrompt::Text(text)) => text.clone(),
         Some(SystemPrompt::Blocks(blocks)) => blocks
             .iter()
-            .map(|block| block.text.clone())
+            .map(|block| block.text.as_str())
             .collect::<Vec<_>>()
             .join("\n"),
         Some(SystemPrompt::RawBlocks(blocks)) => blocks
@@ -89,7 +90,7 @@ pub fn extract_system_prompt(system: Option<&SystemPrompt>) -> String {
 /// Converts a full Anthropic message list into unified messages, one-to-one (unlike the
 /// OpenAI converter, Anthropic already groups a tool result with the user turn it belongs
 /// to, so no buffering/flushing across multiple input messages is needed here — see
-/// [`convert_message`]).
+/// `convert_message`).
 ///
 /// # Examples
 ///
@@ -324,7 +325,7 @@ fn tool_result_text(content: &ToolResultContent) -> String {
         ToolResultContent::Blocks(blocks) => blocks
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text(text) => Some(text.text.clone()),
+                ContentBlock::Text(text) => Some(text.text.as_str()),
                 _ => None,
             })
             .collect(),
@@ -371,9 +372,10 @@ fn image_from_block(block: &ContentBlock) -> Option<UnifiedImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::anthropic::models::{
-        AnthropicMessage, AnthropicMessageContent, AnthropicMessageRole, ContentBlock,
-        TextContentBlock, ToolResultContent, ToolResultContentBlock, ToolUseContentBlock,
+    use crate::api::{
+        AnthropicTextContentBlock as TextContentBlock,
+        AnthropicToolResultContentBlock as ToolResultContentBlock,
+        AnthropicToolUseContentBlock as ToolUseContentBlock,
     };
     use serde_json::Map;
     #[test]

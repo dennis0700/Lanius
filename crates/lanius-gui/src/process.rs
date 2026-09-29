@@ -5,8 +5,8 @@
 //! [`get_port_occupier`]), and "is it safe for us to kill that process
 //! automatically?" (via the self-owned-process check inside
 //! [`terminate_process`]). All process introspection here shells out to
-//! platform-native tools (`lsof`/`ps` on Unix, `netstat`/`tasklist`/`wmic`
-//! on Windows) rather than using a cross-platform process-listing library,
+//! platform-native tools (`lsof`/`ps` on Unix, `netstat`/`tasklist`/
+//! PowerShell on Windows) rather than using a cross-platform process-listing library,
 //! since the exact tool availability and output format is well-understood
 //! and stable on each OS.
 
@@ -41,34 +41,23 @@ fn get_process_command(pid: u32) -> String {
     String::new()
 }
 
-/// Windows equivalent of the Unix `get_process_command`, using `wmic
-/// process where ProcessId=<pid> get CommandLine`. Spawned with
-/// `CREATE_NO_WINDOW` so no console flash appears when this runs from the
-/// GUI process.
+/// Windows equivalent of the Unix `get_process_command`, via PowerShell's
+/// `Get-CimInstance Win32_Process` (`wmic` is deprecated and no longer
+/// installed by default on Windows 11 24H2+). `pid` is a formatted `u32`,
+/// so nothing user-controlled reaches the PowerShell command string.
+/// Spawned with `CREATE_NO_WINDOW` so no console flash appears when this
+/// runs from the GUI process.
 #[cfg(windows)]
 fn get_process_command(pid: u32) -> String {
-    let output = Command::new("wmic")
-        .args([
-            "process",
-            "where",
-            &format!("ProcessId={}", pid),
-            "get",
-            "CommandLine",
-            "/value",
-        ])
+    let script = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
-    if let Ok(out) = output {
-        if out.status.success() {
-            let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines() {
-                if let Some(rest) = line.strip_prefix("CommandLine=") {
-                    return rest.trim().to_string();
-                }
-            }
-        }
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        _ => String::new(),
     }
-    String::new()
 }
 
 /// Fetches just the process's short executable name (not the full command
@@ -119,10 +108,17 @@ fn get_process_name(pid: u32) -> String {
 /// happens whenever nothing matches the filter) is treated as "port free",
 /// not an error.
 ///
-/// On Windows, parses `netstat -ano -p tcp` output, matching lines that
-/// contain `LISTENING` and a local-address column ending in `:<port>`, then
-/// takes the PID from the last whitespace-separated column (netstat's fixed
-/// column layout puts PID last).
+/// On Windows, parses `netstat -ano` output via [`parse_netstat_listener`]
+/// (IPv4 and IPv6 TCP listeners; UDP rows have a different column count and
+/// are skipped).
+///
+/// # Examples
+///
+/// ```ignore
+/// if let Some(occupier) = crate::process::get_port_occupier(8000)? {
+///     println!("port 8000 held by {} (PID {})", occupier.process_name, occupier.pid);
+/// }
+/// ```
 #[allow(clippy::needless_return)]
 pub fn get_port_occupier(port: u16) -> Result<Option<PortOccupier>, String> {
     #[cfg(unix)]
@@ -170,8 +166,9 @@ pub fn get_port_occupier(port: u16) -> Result<Option<PortOccupier>, String> {
 
     #[cfg(windows)]
     {
+        // No `-p tcp`: that filter hides IPv6 (`TCPv6`) listeners.
         let output = Command::new("netstat")
-            .args(["-ano", "-p", "tcp"])
+            .args(["-ano"])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|e| format!("Failed to execute netstat: {}", e))?;
@@ -181,26 +178,8 @@ pub fn get_port_occupier(port: u16) -> Result<Option<PortOccupier>, String> {
         }
 
         let text = String::from_utf8_lossy(&output.stdout);
-        let needle = format!(":{}", port);
-        let mut found_pid: Option<u32> = None;
 
-        // netstat's fixed columns are Proto / Local Address / Foreign
-        // Address / State / PID, so the PID is always the last
-        // whitespace-separated token on a matching line.
-        for line in text.lines() {
-            if !line.contains("LISTENING") || !line.contains(&needle) {
-                continue;
-            }
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            if let Some(pid_col) = cols.last() {
-                found_pid = pid_col.parse::<u32>().ok();
-                if found_pid.is_some() {
-                    break;
-                }
-            }
-        }
-
-        if let Some(pid) = found_pid {
+        if let Some(pid) = parse_netstat_listener(&text, port) {
             return Ok(Some(PortOccupier {
                 pid,
                 process_name: get_process_name(pid),
@@ -209,6 +188,38 @@ pub fn get_port_occupier(port: u16) -> Result<Option<PortOccupier>, String> {
 
         return Ok(None);
     }
+}
+
+/// Finds the PID listening on TCP `port` in `netstat -ano` output.
+///
+/// netstat's columns are Proto / Local Address / Foreign Address / State /
+/// PID. Only the *local address* column's port is compared (exactly), so
+/// port 80 doesn't match a listener on `:8080` and a remote peer's port
+/// never counts. The State column is localized on non-English Windows, so
+/// rows are recognised as listeners by their foreign address instead,
+/// which is always `0.0.0.0:0` / `[::]:0` for a listening socket.
+///
+/// Handles both `TCP 0.0.0.0:8000 ...` and `TCP [::]:8000 ...` rows.
+///
+/// Kept platform-independent (it's pure text parsing) so it's unit-tested
+/// on every OS, not just on Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_netstat_listener(text: &str, port: u16) -> Option<u32> {
+    let port = port.to_string();
+    text.lines().find_map(|line| {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        let [proto, local, foreign, _state, pid] = cols[..] else {
+            return None;
+        };
+        if !proto.eq_ignore_ascii_case("tcp") {
+            return None;
+        }
+        let local_port = local.rsplit(':').next()?;
+        let foreign_port = foreign.rsplit(':').next()?;
+        (local_port == port && foreign_port == "0")
+            .then(|| pid.parse::<u32>().ok())
+            .flatten()
+    })
 }
 
 /// Executable name "stems" that identify a process as belonging to Lanius
@@ -274,6 +285,15 @@ fn is_self_owned_process(name: &str, command: &str) -> bool {
 /// On Unix this sends `SIGTERM` via `libc::kill` (an `unsafe` FFI call, but
 /// one with no memory-safety hazard — it only affects OS process state); on
 /// Windows it shells out to `taskkill /F /PID <pid>`.
+///
+/// # Examples
+///
+/// ```ignore
+/// if let Some(occupier) = crate::process::get_port_occupier(8000)? {
+///     // Only succeeds if the occupier is a stale Lanius instance.
+///     crate::process::terminate_process(occupier.pid, false)?;
+/// }
+/// ```
 #[allow(clippy::needless_return)]
 pub fn terminate_process(pid: u32, force: bool) -> Result<(), String> {
     if pid == std::process::id() {
@@ -326,7 +346,37 @@ pub fn terminate_process(pid: u32, force: bool) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_self_owned_process, normalize_process_stem};
+    use super::{is_self_owned_process, normalize_process_stem, parse_netstat_listener};
+
+    // Trimmed real `netstat -ano` output. The Chinese state column
+    // ("侦听") is what a zh-CN Windows prints instead of "LISTENING".
+    const NETSTAT: &str = "
+Active Connections
+
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1044
+  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       4242
+  TCP    127.0.0.1:52000        127.0.0.1:8000         ESTABLISHED     7777
+  TCP    127.0.0.1:8000         0.0.0.0:0              侦听            5150
+  TCP    [::]:9000              [::]:0                 LISTENING       6060
+  UDP    0.0.0.0:8000           *:*                                    9999
+";
+
+    #[test]
+    fn netstat_matches_the_exact_local_listening_port() {
+        assert_eq!(parse_netstat_listener(NETSTAT, 8000), Some(5150));
+        assert_eq!(parse_netstat_listener(NETSTAT, 8080), Some(4242));
+        assert_eq!(parse_netstat_listener(NETSTAT, 9000), Some(6060));
+    }
+
+    #[test]
+    fn netstat_ignores_prefix_ports_remote_ports_and_udp() {
+        // `:80` must not match the `:8080` listener.
+        assert_eq!(parse_netstat_listener(NETSTAT, 80), None);
+        // 52000 is only a client-side ephemeral port, not a listener.
+        assert_eq!(parse_netstat_listener(NETSTAT, 52000), None);
+        assert_eq!(parse_netstat_listener(NETSTAT, 1), None);
+    }
 
     #[test]
     fn stem_normalization_handles_paths_case_and_exe() {

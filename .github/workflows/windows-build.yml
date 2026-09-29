@@ -1,0 +1,87 @@
+name: Windows Build
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: Lanius
+  BIN_NAME: lanius-desktop
+  TARGET: x86_64-pc-windows-msvc
+  # Statically link the MSVC C runtime so users don't need the
+  # "Visual C++ Redistributable" installed. Scoped to this workflow only.
+  RUSTFLAGS: "-C target-feature=+crt-static"
+  # aws-lc-sys (rustls' crypto backend) needs NASM on Windows x86_64; use its
+  # bundled prebuilt NASM instead of installing one on the runner.
+  AWS_LC_SYS_PREBUILT_NASM: "1"
+
+jobs:
+  build-windows-x64:
+    name: Build Windows (x64)
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(grep -m1 '^version' crates/lanius-gui/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: cargo build --release -p lanius-gui --target ${{ env.TARGET }}
+
+      # Portable zip: unzip anywhere (e.g. %LOCALAPPDATA%\Programs\Lanius)
+      # and run lanius-desktop.exe. The name must match `asset_name()` in
+      # crates/lanius-gui/src/updater.rs, which is how a running Windows
+      # build detects that a newer release has a Windows download.
+      - name: Package zip
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          ZIP_NAME="${APP_NAME}-${VERSION}-windows-x64.zip"
+          STAGING="dist/${APP_NAME}"
+          mkdir -p "${STAGING}"
+          cp "target/${TARGET}/release/${BIN_NAME}.exe" "${STAGING}/"
+          cp LICENSE "${STAGING}/LICENSE.txt"
+          (cd dist && 7z a -tzip "${ZIP_NAME}" "${APP_NAME}" > /dev/null)
+
+          echo "zip_path=dist/${ZIP_NAME}" >> "$GITHUB_ENV"
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.zip_name }}
+          path: ${{ env.zip_path }}
+
+      - name: Upload to GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.zip_path }}

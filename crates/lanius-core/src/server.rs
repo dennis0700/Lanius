@@ -1,10 +1,10 @@
 //! `axum`-based HTTP server: route aggregation, CORS, and auth middleware.
 //!
 //! [`AppState`] is the shared application state constructed once at startup
-//! (via [`AppState::initialize`]) and cloned cheaply into every request
-//! handler. [`app`] assembles the final [`axum::Router`] by merging the
-//! OpenAI-compatible routes ([`crate::api::openai::routes`]) and the
-//! Anthropic-compatible routes ([`crate::api::anthropic::routes`]) with a
+//! (via `AppState::initialize`) and cloned cheaply into every request
+//! handler. `app` assembles the final [`axum::Router`] by merging the
+//! OpenAI-compatible routes ([`crate::api::openai_router`]) and the
+//! Anthropic-compatible routes ([`crate::api::anthropic_router`]) with a
 //! few gateway-level endpoints (`/usage`, `/account`), then layers on model-id
 //! rewriting for Claude-style clients, local-only CORS, tracing, and panic
 //! recovery. [`serve`] and [`spawn`] are the two public entry points used to
@@ -29,14 +29,12 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
-use crate::api::anthropic::routes::{self as anthropic_routes, AnthropicState};
-use crate::api::openai::routes::{self as openai_routes, OpenAiState};
+use crate::api::{AnthropicState, OpenAiState, anthropic_router, openai_router};
 use crate::auth::AuthManager;
 use crate::compat::{self, CompatibilityPipeline};
 use crate::config::Config;
 use crate::error::{GatewayError, Result};
-use crate::model::cache::ModelInfoCache;
-use crate::model::resolver::ModelResolver;
+use crate::model::{ModelInfoCache, ModelResolver};
 use crate::truncation::TruncationStore;
 use crate::upstream::KiroHttpClient;
 use crate::utils::kiro_headers;
@@ -88,9 +86,9 @@ impl AppState {
             // returns nothing we simply keep serving the fallback list.
             let cache = model_cache.clone();
             let auth = auth_manager.clone();
-            let config = (*config).clone();
+            let config = Arc::clone(&config);
             tokio::spawn(async move {
-                match crate::model::resolver::fetch_available_models(auth, &config).await {
+                match crate::model::fetch_available_models(auth, &config).await {
                     Some(models) if !models.is_empty() => {
                         let count = models.len();
                         cache.update(models);
@@ -141,8 +139,8 @@ impl AppState {
 // (innermost to outermost) model-id rewriting for Claude clients, local-only
 // CORS, request tracing, and panic-to-500 recovery.
 fn app(state: AppState) -> Router {
-    let openai = openai_routes::router().with_state(state.openai_state());
-    let anthropic = anthropic_routes::router().with_state(state.anthropic_state());
+    let openai = openai_router().with_state(state.openai_state());
+    let anthropic = anthropic_router().with_state(state.anthropic_state());
     Router::new()
         .merge(openai)
         .merge(anthropic)
@@ -261,9 +259,9 @@ async fn fetch_usage(state: &AppState) -> std::result::Result<Value, Box<Respons
     let token = auth
         .access_token_and_autofetch()
         .await
-        .map_err(|error| Box::new(gateway_response(error, "Failed to fetch usage")))?;
+        .map_err(|error| Box::new(gateway_response(&error, "Failed to fetch usage")))?;
     let body = serde_json::to_vec(&json!({"origin":"AI_EDITOR","isEmailRequired":true}))
-        .map_err(|error| Box::new(gateway_response(error.into(), "Failed to fetch usage")))?;
+        .map_err(|error| Box::new(gateway_response(&error.into(), "Failed to fetch usage")))?;
     let mut headers = reqwest::header::HeaderMap::new();
     for (name, value) in kiro_headers(&token) {
         if let Ok(value) = HeaderValue::from_str(&value) {
@@ -288,12 +286,12 @@ async fn fetch_usage(state: &AppState) -> std::result::Result<Value, Box<Respons
     let response = request
         .send()
         .await
-        .map_err(|error| Box::new(gateway_response(error.into(), "Failed to fetch usage")))?;
+        .map_err(|error| Box::new(gateway_response(&error.into(), "Failed to fetch usage")))?;
     let status = response.status();
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| Box::new(gateway_response(error.into(), "Failed to fetch usage")))?;
+        .map_err(|error| Box::new(gateway_response(&error.into(), "Failed to fetch usage")))?;
     if status != reqwest::StatusCode::OK {
         return Err(Box::new(upstream_usage_error_response(status, &bytes)));
     }
@@ -328,10 +326,10 @@ fn upstream_usage_error_response(status: reqwest::StatusCode, bytes: &[u8]) -> R
 // Converts a `GatewayError` into an HTTP `Response`, prefixing the message
 // with additional context for network/timeout errors (whose default message
 // alone may not make clear which operation failed).
-fn gateway_response(error: GatewayError, prefix: &str) -> Response {
+fn gateway_response(error: &GatewayError, prefix: &str) -> Response {
     let status = StatusCode::from_u16(error.http_status()).unwrap_or(StatusCode::BAD_GATEWAY);
     let detail = if matches!(
-        error,
+        *error,
         GatewayError::Network(_)
             | GatewayError::FirstTokenTimeout(_)
             | GatewayError::StreamReadTimeout(_)

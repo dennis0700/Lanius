@@ -109,6 +109,8 @@ lanius help
 - **桌面应用**：会自动检查 GitHub 上的新版本（可在设置中开关），也可以在设置页
   点击“立即检查”手动触发。发现新版本后，点击“更新并重启”即可下载、验证签名并
   安装。具体实现细节见 [`docs/zh-CN/gui.md`](docs/zh-CN/gui.md)。
+  Windows 版（`Lanius-<版本>-windows-x64.zip`，解压即用）同样会提示新版本，但
+  暂不支持应用内安装：点击“更新并重启”会打开 Release 页面手动下载。
 - **CLI（`lanius`）**：运行 `lanius update` 检查并原地安装最新版本
   （`lanius update --check` 仅检查、不安装；`lanius update -y` 跳过确认提示）。
   systemd 环境下的完整升级流程见

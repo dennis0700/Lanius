@@ -8,13 +8,13 @@
 //! provides:
 //!
 //! - [`check_payload_size`] — measures a payload's size the same way Kiro does: as compact
-//!   ASCII-escaped JSON (see [`compact_ascii_json`]), so multi-byte characters are counted
+//!   ASCII-escaped JSON (see `compact_ascii_json`), so multi-byte characters are counted
 //!   by their `\uXXXX`-escaped length rather than their raw UTF-8 byte length.
 //! - [`trim_payload_to_limit`] — the trimming algorithm itself: strips harmless empty
 //!   `toolUses` arrays, then repeatedly drops the *oldest two* history entries (a
 //!   user/assistant pair) until the payload fits or no more can safely be dropped, then
 //!   repairs any tool results left dangling by the trim (see
-//!   [`repair_orphaned_tool_results`]) and drops any leading entries that no longer start
+//!   `repair_orphaned_tool_results`) and drops any leading entries that no longer start
 //!   with a `userInputMessage` (Kiro requires history to start on a user turn).
 
 use serde_json::{Map, Value};
@@ -36,7 +36,7 @@ pub struct PayloadTrimStats {
 }
 
 /// Measures `payload`'s size exactly as Kiro would count it: the length, in bytes, of its
-/// compact ASCII-escaped JSON serialization (see [`compact_ascii_json`]). This is
+/// compact ASCII-escaped JSON serialization (see `compact_ascii_json`). This is
 /// deliberately *not* `serde_json::to_string(payload).len()`, since that would count
 /// multi-byte UTF-8 characters by their raw byte length rather than their `\uXXXX`-escaped
 /// length, undercounting the size of payloads containing non-ASCII text.
@@ -73,7 +73,7 @@ pub fn check_payload_size(payload: &Value) -> usize {
 ///    irregular shape).
 /// 5. Repair any `toolResults` entries left referencing a `toolUseId` that no longer has a
 ///    matching `toolUses` entry in the now-preceding turn (see
-///    [`repair_orphaned_tool_results`]) — trimming can and does create these, since a tool
+///    `repair_orphaned_tool_results`) — trimming can and does create these, since a tool
 ///    call's originating assistant turn may have been trimmed away while a later user turn
 ///    still references it.
 ///
@@ -256,7 +256,7 @@ fn repair_orphaned_tool_results(history: &mut [Value]) {
 
 /// Extracts human-readable text from a tool result's `content` field (either a plain
 /// string, or an array of `{"text": ...}`-shaped blocks), appending non-empty pieces to
-/// `output`. Used by [`repair_orphaned_tool_results`] to preserve a trace of what an
+/// `output`. Used by `repair_orphaned_tool_results` to preserve a trace of what an
 /// orphaned tool result said, even after the structured result itself is dropped.
 fn collect_tool_text(content: Option<&Value>, output: &mut Vec<String>) {
     match content {

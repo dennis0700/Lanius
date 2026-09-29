@@ -5,7 +5,7 @@
 //! specific to this module:
 //! - API key authentication (`x-api-key` / `Authorization: Bearer`).
 //! - Converting the Anthropic request into the Kiro payload via
-//!   [`crate::convert::anthropic::anthropic_to_kiro`] and issuing the
+//!   [`crate::convert::anthropic_to_kiro`] and issuing the
 //!   upstream request.
 //! - Rewriting incoming requests to inject truncation-recovery notices
 //!   (see [`crate::truncation`]) before conversion.
@@ -25,12 +25,12 @@ use bytes::Bytes;
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
 
-use crate::api::anthropic::models::{
+use super::models::{
     AnthropicCountTokensRequest, AnthropicErrorDetail, AnthropicErrorResponse, AnthropicMessage,
     AnthropicMessageContent, AnthropicMessageRole, AnthropicMessagesRequest, ContentBlock,
     TextContentBlock, ToolResultContent,
 };
-use crate::api::anthropic::sse::{
+use super::sse::{
     AnthropicSseFormatter, DEFAULT_PING_INTERVAL, RequestTokenInput, response_from_stream_result,
 };
 use crate::auth::AuthManager;
@@ -108,12 +108,12 @@ async fn messages(
 
     let token_input = match token_input(&request) {
         Ok(input) => input,
-        Err(error) => return gateway_error_response(error),
+        Err(error) => return gateway_error_response(&error),
     };
     let conversation_id = conversation_id(&request);
     let prepared = match prepare_request(&state, &request, &conversation_id).await {
         Ok(prepared) => prepared,
-        Err(error) => return gateway_error_response(error),
+        Err(error) => return gateway_error_response(&error),
     };
 
     if request.stream {
@@ -131,14 +131,14 @@ async fn messages(
                 save_nonstream_truncations(&state, &conversation_id, &result);
                 Json(response_from_stream_result(
                     result,
-                    request.model,
+                    &request.model,
                     &state.model_cache,
                     &token_input,
                     &prepared.tool_name_aliases,
                 ))
                 .into_response()
             }
-            Err(error) => gateway_error_response(error),
+            Err(error) => gateway_error_response(&error),
         }
     }
 }
@@ -165,7 +165,7 @@ async fn count_tokens_endpoint(
         .collect::<std::result::Result<Vec<_>, _>>()
     {
         Ok(messages) => messages,
-        Err(error) => return gateway_error_response(error.into()),
+        Err(error) => return gateway_error_response(&error.into()),
     };
     let tools = match request
         .tools
@@ -179,7 +179,7 @@ async fn count_tokens_endpoint(
         .transpose()
     {
         Ok(tools) => tools,
-        Err(error) => return gateway_error_response(error.into()),
+        Err(error) => return gateway_error_response(&error.into()),
     };
     let system = match request
         .system
@@ -188,7 +188,7 @@ async fn count_tokens_endpoint(
         .transpose()
     {
         Ok(system) => system,
-        Err(error) => return gateway_error_response(error.into()),
+        Err(error) => return gateway_error_response(&error.into()),
     };
     let input_tokens =
         estimate_request_tokens(&messages, tools.as_deref(), system.as_ref(), true).total_tokens;
@@ -445,9 +445,9 @@ fn error_response(status: StatusCode, kind: &str, message: &str) -> Response {
 /// [`GatewayError::UnknownModel`]) as `invalid_request_error` and
 /// everything else as a generic `api_error`, using the error's own
 /// `http_status()`/`user_message()`.
-fn gateway_error_response(error: GatewayError) -> Response {
+fn gateway_error_response(error: &GatewayError) -> Response {
     let kind = if matches!(
-        error,
+        *error,
         GatewayError::InvalidRequest(_) | GatewayError::UnknownModel(_)
     ) {
         "invalid_request_error"
@@ -495,13 +495,13 @@ fn token_input(request: &AnthropicMessagesRequest) -> Result<RequestTokenInput> 
 /// history, used as the key for [`TruncationStore`] lookups so truncation
 /// recovery state can be matched across turns of the same conversation.
 fn conversation_id(request: &AnthropicMessagesRequest) -> String {
-    let owned: Vec<(String, Value)> = request
+    let owned: Vec<(&str, Value)> = request
         .messages
         .iter()
         .filter_map(|message| {
             serde_json::to_value(&message.content)
                 .ok()
-                .map(|content| (role_name(message.role).to_string(), content))
+                .map(|content| (role_name(message.role), content))
         })
         .collect();
     let hashable: Vec<HashableMessage<'_>> = owned
@@ -560,7 +560,7 @@ fn apply_truncation_recovery(
     }
     let conversation_id = conversation_id(request);
     let mut revised = Vec::with_capacity(request.messages.len());
-    for mut message in request.messages.clone() {
+    for mut message in std::mem::take(&mut request.messages) {
         if message.role == AnthropicMessageRole::User {
             if let AnthropicMessageContent::Blocks(blocks) = &mut message.content {
                 for block in blocks {
@@ -653,16 +653,16 @@ fn message_text(message: &AnthropicMessage) -> String {
 fn save_nonstream_truncations(
     state: &AnthropicState,
     conversation_id: &str,
-    result: &crate::upstream::stream::StreamResult,
+    result: &crate::upstream::StreamResult,
 ) {
     if !state.config.truncation_recovery {
         return;
     }
     for tool in &result.tool_calls {
         if let Some(info) = &tool.truncation {
-            let id = tool.id.clone().unwrap_or_default();
+            let id = tool.id.as_deref().unwrap_or_default();
             if !id.is_empty() {
-                state.truncation_store.save_tool_truncation(conversation_id, id, tool.name.clone(), json!({"is_truncated":info.is_truncated,"reason":info.reason,"size_bytes":info.size_bytes}));
+                state.truncation_store.save_tool_truncation(conversation_id, id, tool.name.as_str(), json!({"is_truncated":info.is_truncated,"reason":info.reason,"size_bytes":info.size_bytes}));
             }
         }
     }

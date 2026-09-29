@@ -1,6 +1,6 @@
 //! SSE encoding for the Anthropic Messages API.
 //!
-//! Converts Kiro's internal event stream ([`crate::upstream::stream`])
+//! Converts Kiro's internal event stream ([`crate::upstream::KiroEvent`])
 //! into the sequence of Server-Sent Events frames expected by Anthropic
 //! clients (`message_start`, `content_block_start/delta/stop`,
 //! `message_delta`, `message_stop`, `ping`, `error`), and also assembles
@@ -312,7 +312,7 @@ impl AnthropicSseFormatter {
     ///   signature is remembered and emitted as `signature_delta` when the
     ///   thinking block closes.
     /// - `ToolUse`: closes any open text/thinking block (a tool call always
-    ///   starts a new content block) and delegates to [`Self::emit_tool`].
+    ///   starts a new content block) and delegates to `Self::emit_tool`.
     /// - `ContextUsage`/`Usage`: recorded for use by [`Self::finish`]; they
     ///   never emit frames on their own.
     /// - `Error`: delegates to [`Self::error`], terminating the stream.
@@ -478,7 +478,7 @@ impl AnthropicSseFormatter {
         };
         let mut usage = Map::new();
         usage.insert("output_tokens".to_string(), json!(output_tokens));
-        usage.extend(self.cache_usage.clone());
+        usage.extend(std::mem::take(&mut self.cache_usage));
         frames.push(format_sse_event(
             "message_delta",
             &json!({"type":"message_delta","delta":{"stop_reason":stop_reason,"stop_sequence":Value::Null},"usage":usage}),
@@ -492,7 +492,7 @@ impl AnthropicSseFormatter {
 
     /// Emits a terminal `error` frame and marks the stream as finished.
     /// Idempotent: a second call returns an empty frame list. Truncates
-    /// `message` via [`safe_error_message`] to avoid an unbounded error
+    /// `message` via `safe_error_message` to avoid an unbounded error
     /// payload reaching the client.
     ///
     /// # Examples
@@ -660,7 +660,7 @@ impl AnthropicSseFormatter {
 /// ```
 pub fn response_from_stream_result(
     mut result: StreamResult,
-    model: String,
+    model: &str,
     model_cache: &ModelInfoCache,
     request: &RequestTokenInput,
     aliases: &ToolNameAliases,
@@ -678,7 +678,7 @@ pub fn response_from_stream_result(
         result.context_usage_percentage,
         output_tokens,
         model_cache,
-        &model,
+        model,
     );
     if context.prompt_source != "unknown" {
         input_tokens = context.prompt_tokens;
@@ -687,20 +687,19 @@ pub fn response_from_stream_result(
     if !result.thinking_content.is_empty() {
         let signature = result
             .thinking_signature
-            .clone()
+            .take()
             .unwrap_or_else(generate_thinking_signature);
         content.push(
             json!({"type":"thinking","thinking":result.thinking_content,"signature":signature}),
         );
     }
-    let text = result.content.clone();
-    if !text.is_empty() {
-        content.push(json!({"type":"text","text":text}));
+    if !result.content.is_empty() {
+        content.push(json!({"type":"text","text":result.content}));
     }
-    for tool in &result.tool_calls {
+    for tool in &mut result.tool_calls {
         let id = tool
             .id
-            .clone()
+            .take()
             .filter(|id| !id.is_empty())
             .unwrap_or_else(generate_tool_id);
         content.push(json!({"type":"tool_use","id":id,"name":tool.name,"input":parse_tool_input(&tool.arguments)}));
@@ -772,7 +771,7 @@ fn safe_error_message(message: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::upstream::parser::ToolCall;
+    use crate::upstream::ToolCall;
 
     fn formatter() -> AnthropicSseFormatter {
         AnthropicSseFormatter::new(
@@ -921,7 +920,7 @@ mod tests {
                 content: "ok".into(),
                 ..StreamResult::default()
             },
-            "claude".into(),
+            "claude",
             &ModelInfoCache::default(),
             &RequestTokenInput {
                 messages: vec![],
@@ -935,12 +934,13 @@ mod tests {
     #[test]
     fn request_scoped_aliases_round_trip_anthropic_conversion_sse_and_collection() {
         let original = "mcp__plugin_everything_claude_code_github__create_pull_request_review";
-        let request: crate::api::anthropic::models::AnthropicMessagesRequest = serde_json::from_value(json!({
+        let request: crate::api::AnthropicMessagesRequest = serde_json::from_value(json!({
             "model":"claude", "max_tokens":1, "messages":[{"role":"user","content":"use the tool"}],
             "tools":[{"name":original,"input_schema":{"type":"object"}}]
-        })).unwrap_or_else(|error| panic!("fixture request must deserialize: {error}"));
+        }))
+        .unwrap_or_else(|error| panic!("fixture request must deserialize: {error}"));
         let mut aliases = ToolNameAliases::default();
-        let payload = crate::convert::anthropic::anthropic_to_kiro(
+        let payload = crate::convert::anthropic_to_kiro(
             &request,
             "conversation",
             None,
@@ -1014,7 +1014,7 @@ mod tests {
                 }],
                 ..StreamResult::default()
             },
-            "claude".into(),
+            "claude",
             &ModelInfoCache::default(),
             &RequestTokenInput {
                 messages: vec![],
@@ -1077,7 +1077,7 @@ mod native_thinking_tests {
                 context_usage_percentage: Some(1.0),
                 ..StreamResult::default()
             },
-            "claude".into(),
+            "claude",
             &ModelInfoCache::default(),
             &request(),
             &ToolNameAliases::default(),

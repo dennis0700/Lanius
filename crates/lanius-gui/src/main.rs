@@ -42,6 +42,8 @@ mod ui_tests;
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -91,6 +93,13 @@ fn mono_font() -> &'static str {
 /// the event loop exits, so the embedded gateway gets a chance to shut down
 /// cleanly before the process exits.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Must run before anything else touches the gateway port: a second
+    // instance would otherwise kill the first while reclaiming it.
+    #[cfg(target_os = "windows")]
+    let Some(_instance_guard) = windows::acquire_single_instance() else {
+        return Ok(());
+    };
+
     let log_buffer = LogBuffer::new();
     tracing_subscriber::registry()
         .with(
@@ -124,6 +133,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     wire_callbacks(&ui, &controller, &handle);
 
+    #[cfg(target_os = "windows")]
+    {
+        let weak = ui.as_weak();
+        // Fires on a background thread; hop onto the Slint event loop to
+        // touch the window.
+        windows::listen_for_activation(move || {
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                // `show()` alone won't restore a window minimized to the
+                // taskbar, so un-minimize it first.
+                if let Some(ui) = weak.upgrade() {
+                    ui.window().set_minimized(false);
+                }
+                show_window(&weak);
+            });
+        });
+    }
+
     {
         let weak = ui.as_weak();
         // Hiding the window on close (rather than letting Slint destroy it)
@@ -154,7 +181,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tray_timer = Timer::default();
     {
         let controller = Arc::clone(&controller);
-        let handle = handle.clone();
         let weak = ui.as_weak();
         let mut tray: Option<Tray> = None;
         let mut tray_failed = false;

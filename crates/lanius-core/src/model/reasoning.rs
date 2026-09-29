@@ -193,6 +193,21 @@ impl ReasoningCapability {
     }
 
     /// Whether reasoning can be switched off entirely for this model.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::model::{EffortLevel, ReasoningCapability, ReasoningProtocol};
+    ///
+    /// let capability = ReasoningCapability {
+    ///     protocol: ReasoningProtocol::Reasoning,
+    ///     thinking_types: vec![],
+    ///     display_modes: vec![],
+    ///     effort_levels: vec![EffortLevel::None, EffortLevel::Low, EffortLevel::High],
+    ///     default_effort: None,
+    /// };
+    /// assert!(capability.can_disable());
+    /// ```
     pub fn can_disable(&self) -> bool {
         match self.protocol {
             ReasoningProtocol::Thinking => self.thinking_types.iter().any(|t| t == "disabled"),

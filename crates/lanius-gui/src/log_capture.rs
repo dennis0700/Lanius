@@ -42,6 +42,13 @@ pub struct LogBuffer {
 
 impl LogBuffer {
     /// Creates an empty log buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let buffer = crate::log_capture::LogBuffer::new();
+    /// assert!(buffer.get_all().is_empty());
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
@@ -50,6 +57,14 @@ impl LogBuffer {
     /// first. Recovers gracefully (rather than panicking) if the lock was
     /// poisoned by a prior panic, since losing log history is preferable to
     /// crashing the GUI.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let buffer = crate::log_capture::LogBuffer::new();
+    /// buffer.push_stamped("2026-01-01 12:00:00 | INFO started".to_string());
+    /// assert_eq!(buffer.get_all().len(), 1);
+    /// ```
     pub fn get_all(&self) -> Vec<String> {
         match self.lines.lock() {
             Ok(lines) => lines.clone(),
@@ -58,6 +73,15 @@ impl LogBuffer {
     }
 
     /// Discards all buffered lines (used by the "Clear logs" UI action).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let buffer = crate::log_capture::LogBuffer::new();
+    /// buffer.push_stamped("2026-01-01 12:00:00 | INFO started".to_string());
+    /// buffer.clear();
+    /// assert!(buffer.get_all().is_empty());
+    /// ```
     pub fn clear(&self) {
         if let Ok(mut lines) = self.lines.lock() {
             lines.clear();
@@ -71,6 +95,14 @@ impl LogBuffer {
     /// This is the primitive both [`CaptureLayer`] (for `tracing` events)
     /// and `server.rs` (for the embedded gateway's own status messages) use
     /// to write into the buffer, so both sources share one eviction policy.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let buffer = crate::log_capture::LogBuffer::new();
+    /// let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    /// buffer.push_stamped(format!("{now} | Gateway started"));
+    /// ```
     pub fn push_stamped(&self, stamped: String) {
         if let Ok(mut lines) = self.lines.lock() {
             if lines.len() >= MAX_LOG_LINES {
@@ -128,6 +160,16 @@ pub struct CaptureLayer {
 
 impl CaptureLayer {
     /// Creates a capture layer that appends rendered events to `buffer`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use tracing_subscriber::layer::SubscriberExt;
+    /// use crate::log_capture::{CaptureLayer, LogBuffer};
+    ///
+    /// let buffer = LogBuffer::new();
+    /// let subscriber = tracing_subscriber::registry().with(CaptureLayer::new(buffer.clone()));
+    /// ```
     pub fn new(buffer: LogBuffer) -> Self {
         Self { buffer }
     }

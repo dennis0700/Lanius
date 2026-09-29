@@ -33,6 +33,16 @@ fn client() -> reqwest::Client {
 /// since `lanius_core::server::spawn` returning successfully only means the
 /// listener is bound, not that the gateway has finished any internal
 /// warmup.
+///
+/// # Examples
+///
+/// ```ignore
+/// use std::time::Duration;
+/// let healthy = crate::api::wait_for_health("127.0.0.1", 8000, Duration::from_secs(20)).await;
+/// if !healthy {
+///     tracing::warn!("gateway did not become healthy in time");
+/// }
+/// ```
 pub async fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
     let start = Instant::now();
     let client = client();
@@ -91,6 +101,15 @@ fn split_model_description(raw: &str) -> (String, String) {
 /// error string (not a typed error) on any HTTP-level or non-2xx failure,
 /// matching this module's convention of surfacing errors as plain text
 /// suitable for direct display or logging.
+///
+/// # Examples
+///
+/// ```ignore
+/// let models = crate::api::fetch_models("127.0.0.1", 8000, "sk-example").await?;
+/// for model in &models {
+///     println!("{} {}", model.id, model.rate_text);
+/// }
+/// ```
 pub async fn fetch_models(host: &str, port: u16, api_key: &str) -> Result<Vec<ModelInfo>, String> {
     let response = client()
         .get(format!("http://{host}:{port}/v1/models"))
@@ -167,6 +186,13 @@ impl UsageSummary {
     /// Remaining usage (`total_limit - total_used`), clamped to never go
     /// negative even if usage momentarily exceeds the reported limit (e.g.
     /// due to a stale/racy limit figure).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let usage = crate::api::UsageSummary { total_limit: 1000.0, total_used: 250.0, ..Default::default() };
+    /// assert_eq!(usage.remaining(), 750.0);
+    /// ```
     pub fn remaining(&self) -> f64 {
         (self.total_limit - self.total_used).max(0.0)
     }
@@ -176,6 +202,14 @@ impl UsageSummary {
     /// e.g. before usage has ever been fetched successfully) — callers keep
     /// the tray's previous label in that case rather than replacing it with
     /// a meaningless "0 / 0" line.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let usage = crate::api::UsageSummary { total_limit: 1700.0, total_used: 400.0, percent: 24, ..Default::default() };
+    /// assert_eq!(usage.tray_label().as_deref(), Some("Credit: 400 / 1,700 (24%)"));
+    /// assert!(crate::api::UsageSummary::default().tray_label().is_none());
+    /// ```
     pub fn tray_label(&self) -> Option<String> {
         if self.total_limit <= 0.0 {
             return None;
@@ -196,6 +230,13 @@ impl UsageSummary {
 /// grouped into comma-separated triples from the right; a negative sign is
 /// re-applied after formatting the absolute value so grouping logic doesn't
 /// need to special-case it.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert_eq!(crate::api::fmt_thousands(1234.6), "1,235");
+/// assert_eq!(crate::api::fmt_thousands(1_234_567.0), "1,234,567");
+/// ```
 pub fn fmt_thousands(value: f64) -> String {
     let rounded = value.round().abs() as u64;
     let digits = rounded.to_string();
@@ -214,6 +255,13 @@ pub fn fmt_thousands(value: f64) -> String {
 /// failure; actual field extraction/normalization is delegated to
 /// [`parse_usage`] so that logic can be unit-tested against raw JSON
 /// fixtures without a real HTTP call.
+///
+/// # Examples
+///
+/// ```ignore
+/// let usage = crate::api::fetch_usage("127.0.0.1", 8000, "sk-example").await?;
+/// println!("{}% used, {} remaining", usage.percent, usage.remaining());
+/// ```
 pub async fn fetch_usage(host: &str, port: u16, api_key: &str) -> Result<UsageSummary, String> {
     let response = client()
         .get(format!("http://{host}:{port}/usage"))
@@ -390,6 +438,13 @@ fn format_epoch_seconds(seconds: i64) -> String {
 
 /// Returns the running build's version string, taken from the crate's
 /// `CARGO_PKG_VERSION` at compile time.
+///
+/// # Examples
+///
+/// ```ignore
+/// let version = crate::api::app_version();
+/// assert_eq!(version, env!("CARGO_PKG_VERSION"));
+/// ```
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }

@@ -50,6 +50,14 @@ pub struct ServerManager {
 impl ServerManager {
     /// Creates a manager in the stopped state, appending its own lifecycle
     /// log lines to the given shared `logs` buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::log_capture::LogBuffer;
+    /// let manager = crate::server::ServerManager::new(LogBuffer::new());
+    /// assert_eq!(manager.get_status().status, "stopped");
+    /// ```
     pub fn new(logs: LogBuffer) -> Self {
         Self {
             handle: None,
@@ -60,11 +68,28 @@ impl ServerManager {
 
     /// Returns a snapshot of every log line captured so far (both from
     /// `tracing` events and this manager's own lifecycle messages).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let manager = crate::server::ServerManager::new(crate::log_capture::LogBuffer::new());
+    /// for line in manager.get_logs() {
+    ///     println!("{line}");
+    /// }
+    /// ```
     pub fn get_logs(&self) -> Vec<String> {
         self.logs.get_all()
     }
 
     /// Clears the shared log buffer (used by the "Clear logs" UI action).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut manager = crate::server::ServerManager::new(crate::log_capture::LogBuffer::new());
+    /// manager.clear_logs();
+    /// assert!(manager.get_logs().is_empty());
+    /// ```
     pub fn clear_logs(&mut self) {
         self.logs.clear();
     }
@@ -95,7 +120,16 @@ impl ServerManager {
     /// that). On success, stores the new `GatewayHandle` and updates
     /// `self.status` to `"running"` with the port the gateway actually
     /// bound to.
-    pub async fn start(&mut self, config: AppConfig) -> Result<ServerStatus, String> {
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut manager = crate::server::ServerManager::new(crate::log_capture::LogBuffer::new());
+    /// let config = crate::config::load_config().await?;
+    /// let status = manager.start(config).await?;
+    /// println!("gateway listening on {:?}", status.port);
+    /// ```
+    pub async fn start(&mut self, config: &AppConfig) -> Result<ServerStatus, String> {
         if self.handle.is_some() {
             return Err("Server is already running".to_string());
         }
@@ -106,7 +140,7 @@ impl ServerManager {
             error: None,
         };
 
-        let gateway_config = build_gateway_config(&config)?;
+        let gateway_config = build_gateway_config(config)?;
 
         if let Err(e) = gateway_config.validate() {
             let msg = format!("Invalid configuration: {e}");
@@ -154,6 +188,15 @@ impl ServerManager {
     /// underlying `GatewayHandle::shutdown` reports an error — the error is
     /// still returned to the caller for logging/display, but does not
     /// prevent the manager from considering itself stopped.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut manager = crate::server::ServerManager::new(crate::log_capture::LogBuffer::new());
+    /// manager.start(crate::config::load_config().await?).await?;
+    /// manager.stop().await?;
+    /// assert_eq!(manager.get_status().status, "stopped");
+    /// ```
     pub async fn stop(&mut self) -> Result<(), String> {
         match self.handle.take() {
             Some(handle) => {
@@ -180,8 +223,16 @@ impl ServerManager {
     }
 
     /// Returns the last known [`ServerStatus`].
-    pub fn get_status(&self) -> ServerStatus {
-        self.status.clone()
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let manager = crate::server::ServerManager::new(crate::log_capture::LogBuffer::new());
+    /// let status = manager.get_status();
+    /// assert!(status.port.is_none());
+    /// ```
+    pub fn get_status(&self) -> &ServerStatus {
+        &self.status
     }
 }
 

@@ -46,6 +46,15 @@ fn running_in_container() -> bool {
 /// Runs the `update` subcommand: reports what it did and what to do next
 /// via stdout, and returns an error (surfaced by `anyhow`/`main`) for
 /// anything that stops the update from completing.
+///
+/// # Examples
+///
+/// ```ignore
+/// // `lanius update --check`: report whether a newer release exists.
+/// update::run(true, false, None).await?;
+/// // `lanius update --yes --version 0.1.4`: install a pinned release.
+/// update::run(false, true, Some("0.1.4".to_string())).await?;
+/// ```
 pub async fn run(check_only: bool, assume_yes: bool, pinned_version: Option<String>) -> Result<()> {
     if running_in_container() {
         bail!(

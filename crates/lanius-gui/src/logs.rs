@@ -36,6 +36,14 @@ pub const MAX_VISIBLE_LOGS: usize = 500;
 /// but possible) have that terminator character pushed to the output rather
 /// than silently dropped, so no character is ever lost — only recognized
 /// color/style codes are stripped.
+///
+/// # Examples
+///
+/// ```ignore
+/// use crate::logs::strip_ansi;
+///
+/// assert_eq!(strip_ansi("\u{1b}[32mINFO\u{1b}[0m ready"), "INFO ready");
+/// ```
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -74,6 +82,15 @@ pub fn strip_ansi(text: &str) -> String {
 /// active"). Lines without this exact prefix — including untimestamped
 /// passthrough output — are treated as having no time, and the full line is
 /// shown as-is in the message column.
+///
+/// # Examples
+///
+/// ```ignore
+/// use crate::logs::extract_time;
+///
+/// assert_eq!(extract_time("2026-02-10 18:11:11 | INFO | started"), "18:11:11");
+/// assert_eq!(extract_time("8000 connections active"), "");
+/// ```
 pub fn extract_time(line: &str) -> String {
     let bytes = line.as_bytes();
     if bytes.len() < 19 {
@@ -129,6 +146,15 @@ pub struct ProcessedLog {
 /// [`extract_time`]) is split off into `time` and removed, along with its
 /// `|` separator and surrounding whitespace, from the displayed `text`, so
 /// the timestamp is never rendered twice.
+///
+/// # Examples
+///
+/// ```ignore
+/// let lines = vec!["2026-02-10 18:11:11 | Gateway listening on port 8000".to_string()];
+/// let rows = crate::logs::process(&lines);
+/// assert_eq!(rows[0].time, "18:11:11");
+/// assert_eq!(rows[0].text, "Gateway listening on port 8000");
+/// ```
 pub fn process(lines: &[String]) -> Vec<ProcessedLog> {
     let start = lines.len().saturating_sub(MAX_VISIBLE_LOGS);
     lines[start..]
@@ -154,6 +180,14 @@ pub fn process(lines: &[String]) -> Vec<ProcessedLog> {
 /// as plain text for the "export logs" feature, stripping ANSI codes but
 /// leaving timestamps in place (unlike [`process`], which splits them into a
 /// separate field for the UI's gutter column).
+///
+/// # Examples
+///
+/// ```ignore
+/// let lines = vec!["2026-02-10 18:11:11 | \u{1b}[32mINFO\u{1b}[0m ready".to_string()];
+/// let text = crate::logs::export_text(&lines);
+/// assert_eq!(text, "2026-02-10 18:11:11 | INFO ready");
+/// ```
 pub fn export_text(lines: &[String]) -> String {
     lines
         .iter()

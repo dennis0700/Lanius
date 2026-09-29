@@ -1,4 +1,4 @@
-//! Wraps [`AwsEventStreamParser`](crate::upstream::parser::AwsEventStreamParser)
+//! Wraps [`AwsEventStreamParser`]
 //! to produce the crate-wide stream of provider-agnostic [`KiroEvent`]s.
 //!
 //! This is the layer the API route handlers in [`crate::api`] actually
@@ -21,11 +21,11 @@ use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 
-use crate::config::Config;
-use crate::error::{GatewayError, Result, classify_network_error};
-use crate::upstream::parser::{
+use super::parser::{
     AwsEventStreamParser, ParserEvent, ToolCall, deduplicate_tool_calls, parse_bracket_tool_calls,
 };
+use crate::config::Config;
+use crate::error::{GatewayError, Result, classify_network_error};
 
 /// Discriminant for [`KiroEvent`], identifying which of its optional fields
 /// is populated.
@@ -63,7 +63,7 @@ pub struct KiroEvent {
     /// Opaque signature closing a native thinking block, when Kiro sent one.
     pub thinking_signature: Option<String>,
     /// The completed tool call, for [`KiroEventType::ToolUse`] events.
-    pub tool_use: Option<crate::upstream::parser::ToolCall>,
+    pub tool_use: Option<super::parser::ToolCall>,
     /// Raw usage/billing JSON, for [`KiroEventType::Usage`] events.
     pub usage: Option<serde_json::Value>,
     /// Context-window usage percentage, for [`KiroEventType::ContextUsage`]
@@ -288,7 +288,7 @@ where
             .await
             .map_err(|_| GatewayError::FirstTokenTimeout(first_token_timeout))?;
         let Some(first) = first else { return; };
-        let first = first.map_err(network_error)?;
+        let first = first.map_err(|error| network_error(&error))?;
         for event in process_chunk(&mut parser, &first) {
             yield event;
         }
@@ -298,7 +298,7 @@ where
                 .await
                 .map_err(|_| GatewayError::StreamReadTimeout(streaming_read_timeout))?;
             let Some(chunk) = next else { break; };
-            let chunk = chunk.map_err(network_error)?;
+            let chunk = chunk.map_err(|error| network_error(&error))?;
             for event in process_chunk(&mut parser, &chunk) {
                 yield event;
             }
@@ -512,8 +512,8 @@ fn is_truthy(value: &Value) -> bool {
     }
 }
 
-fn network_error(error: reqwest::Error) -> GatewayError {
-    let info = classify_network_error(&error);
+fn network_error(error: &reqwest::Error) -> GatewayError {
+    let info = classify_network_error(error);
     tracing::warn!(
         category = %info.category,
         details = %info.technical_details,

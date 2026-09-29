@@ -65,6 +65,9 @@ pub enum UpdateError {
     #[error("failed to parse version {0:?}: {1}")]
     InvalidVersion(String, semver::Error),
 
+    #[error("embedded release public key is invalid: {0}")]
+    InvalidPublicKey(minisign_verify::Error),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -86,6 +89,24 @@ impl Release {
     /// Parses [`tag_name`](Self::tag_name) as a [`semver::Version`],
     /// stripping a leading `v` if present (GitHub tags are conventionally
     /// `v1.2.3`, but `Cargo.toml`/`semver` expect `1.2.3`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::update::Release;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let release = Release {
+    ///     tag_name: "v1.2.3".into(),
+    ///     html_url: String::new(),
+    ///     prerelease: false,
+    ///     draft: false,
+    ///     assets: vec![],
+    /// };
+    /// assert_eq!(release.version()?, semver::Version::new(1, 2, 3));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn version(&self) -> Result<semver::Version, UpdateError> {
         let raw = self.tag_name.trim_start_matches('v');
         semver::Version::parse(raw)
@@ -93,6 +114,26 @@ impl Release {
     }
 
     /// Looks up an asset by exact file name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::update::{Asset, Release};
+    ///
+    /// let release = Release {
+    ///     tag_name: "v1.0.0".into(),
+    ///     html_url: String::new(),
+    ///     prerelease: false,
+    ///     draft: false,
+    ///     assets: vec![Asset {
+    ///         name: "app.tar.gz".into(),
+    ///         size: 0,
+    ///         browser_download_url: "https://example.com/app.tar.gz".into(),
+    ///     }],
+    /// };
+    /// assert!(release.asset("app.tar.gz").is_some());
+    /// assert!(release.asset("missing.zip").is_none());
+    /// ```
     pub fn asset(&self, name: &str) -> Option<&Asset> {
         self.assets.iter().find(|a| a.name == name)
     }
@@ -145,12 +186,24 @@ impl Updater {
     /// `proxy_url`, if set, is used for both the GitHub API and asset
     /// download requests, mirroring `VPN_PROXY_URL`'s scheme validation
     /// elsewhere in this crate (`http(s)://`, `socks5://`, `socks5h://`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::update::Updater;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let updater = Updater::new("lanius-cli/0.1.0", None)?;
+    /// # let _ = updater;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new(
         user_agent: impl Into<String>,
         proxy_url: Option<&str>,
     ) -> Result<Self, UpdateError> {
-        let public_key = PublicKey::from_base64(RELEASE_PUBLIC_KEY)
-            .expect("RELEASE_PUBLIC_KEY must be a valid minisign public key");
+        let public_key =
+            PublicKey::from_base64(RELEASE_PUBLIC_KEY).map_err(UpdateError::InvalidPublicKey)?;
         Self::with_config(
             GITHUB_API_BASE.to_string(),
             REPO.to_string(),
@@ -164,6 +217,22 @@ impl Updater {
     /// public key overridable — used by this module's own tests to point at
     /// a local mock server and a throwaway keypair instead of the real
     /// GitHub API and production signing key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::update::{RELEASE_PUBLIC_KEY, Updater};
+    /// use minisign_verify::PublicKey;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let key = PublicKey::from_base64(RELEASE_PUBLIC_KEY)?;
+    /// let updater = Updater::with_config(
+    ///     "http://127.0.0.1:8080".into(), "owner/repo".into(), key, "lanius-test/1.0", None,
+    /// )?;
+    /// # let _ = updater;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_config(
         api_base: String,
         repo: String,
@@ -186,6 +255,19 @@ impl Updater {
     }
 
     /// Fetches the latest non-prerelease, non-draft release.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use lanius_core::update::Updater;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let updater = Updater::new("lanius-cli/0.1.0", None)?;
+    /// let release = updater.latest_release().await?;
+    /// println!("latest: {}", release.version()?);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn latest_release(&self) -> Result<Release, UpdateError> {
         let url = format!("{}/repos/{}/releases/latest", self.api_base, self.repo);
         self.get_release(&url).await
@@ -193,6 +275,19 @@ impl Updater {
 
     /// Fetches the release tagged `version` (accepts either `"1.2.3"` or
     /// `"v1.2.3"`), used for `--version <x.y.z>` pins/rollbacks.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use lanius_core::update::Updater;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let updater = Updater::new("lanius-cli/0.1.0", None)?;
+    /// let release = updater.release_by_version("0.1.0").await?;
+    /// assert_eq!(release.tag_name, "v0.1.0");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn release_by_version(&self, version: &str) -> Result<Release, UpdateError> {
         let tag = if version.starts_with('v') {
             version.to_string()
@@ -236,6 +331,23 @@ impl Updater {
     /// place once the signature is confirmed, so a failed/interrupted
     /// download or a failed verification never leaves a file at `dest` for
     /// a caller to mistakenly trust.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use lanius_core::update::{NoProgress, Updater};
+    /// use std::path::Path;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let updater = Updater::new("lanius-cli/0.1.0", None)?;
+    /// let release = updater.latest_release().await?;
+    /// if let Some(asset) = release.asset("lanius-linux-amd64.tar.gz") {
+    ///     let dest = Path::new("/tmp/lanius.tar.gz");
+    ///     updater.download_verified(&release, asset, dest, &mut NoProgress).await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn download_verified(
         &self,
         release: &Release,
@@ -313,6 +425,18 @@ impl Updater {
 /// `spawn_blocking` thread so it doesn't stall the async runtime; `tar`'s
 /// `Archive::unpack` already rejects entries that would escape `dest_dir`
 /// via `..` path components.
+///
+/// # Examples
+///
+/// ```no_run
+/// use lanius_core::update::extract_tar_gz;
+/// use std::path::Path;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// extract_tar_gz(Path::new("/tmp/lanius.tar.gz"), Path::new("/tmp/lanius-new")).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<(), UpdateError> {
     let archive_path = archive_path.to_path_buf();
     let dest_dir = dest_dir.to_path_buf();
@@ -335,6 +459,16 @@ pub async fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<(), 
 /// [`Updater::latest_release`] already excludes prereleases and this guards
 /// against a `--version` pin or a future "beta channel" flag from ever
 /// downgrading a stable install without the user asking to.
+///
+/// # Examples
+///
+/// ```
+/// use lanius_core::update::is_newer;
+/// use semver::Version;
+///
+/// assert!(is_newer(&Version::new(1, 2, 3), &Version::new(1, 3, 0)));
+/// assert!(!is_newer(&Version::new(1, 2, 3), &Version::new(1, 2, 3)));
+/// ```
 pub fn is_newer(current: &semver::Version, latest: &semver::Version) -> bool {
     latest > current
 }

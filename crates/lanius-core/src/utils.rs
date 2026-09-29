@@ -5,7 +5,7 @@
 //! ([`machine_fingerprint`], [`kiro_headers`]), specific User-Agent strings,
 //! and JSON payloads serialized with `", "`/`": "` separators rather than
 //! `serde_json`'s compact default — see [`format_json_spaced`]/
-//! [`format_json_spaced_sorted`], used by [`crate::upstream::parser`] and
+//! [`format_json_spaced_sorted`], used by `upstream::parser` and
 //! [`crate::tokenizer`] to match Kiro's expected wire format and token
 //! accounting byte-for-byte. This module also provides the various opaque
 //! id generators used across the crate ([`generate_completion_id`],

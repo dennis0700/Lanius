@@ -31,7 +31,7 @@ pub const TRUNCATION_TOOL_RESULT_MESSAGE: &str = "[API Limitation] Your tool cal
 pub const TRUNCATION_USER_MESSAGE: &str = "[System Notice] Your previous response was truncated by the API due to output size limitations. This is not an error on your part. If you need to continue, please adapt your approach rather than repeating the same output.";
 
 /// Default time-to-live for cache entries before they are treated as expired
-/// and evicted (see [`expire_entries`]).
+/// and evicted (see `expire_entries`).
 pub const DEFAULT_TRUNCATION_TTL: Duration = Duration::from_secs(30 * 60);
 /// Default maximum number of entries retained in the cache before the
 /// least-recently-used entry is evicted.
@@ -218,7 +218,7 @@ impl TruncationStore {
             conversation_id: conversation_id.to_string(),
             tool_call_id: tool_call_id.to_string(),
         };
-        self.take(key).and_then(|entry| match entry {
+        self.take(&key).and_then(|entry| match entry {
             CacheValue::Tool(info) => Some(info),
             CacheValue::Content(_) => None,
         })
@@ -277,6 +277,17 @@ impl TruncationStore {
     /// Removes and returns the truncation record matching `content`'s hash
     /// within `conversation_id`, if present and not expired. Consumes the
     /// entry: calling this again for the same content returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::truncation::TruncationStore;
+    ///
+    /// let store = TruncationStore::default();
+    /// store.save_content_truncation("conv-1", "cut off mid-sent");
+    /// assert!(store.take_content_truncation("conv-1", "cut off mid-sent").is_some());
+    /// assert!(store.take_content_truncation("conv-1", "cut off mid-sent").is_none());
+    /// ```
     pub fn take_content_truncation(
         &self,
         conversation_id: &str,
@@ -286,7 +297,7 @@ impl TruncationStore {
             conversation_id: conversation_id.to_string(),
             message_hash: content_hash(content),
         };
-        self.take(key).and_then(|entry| match entry {
+        self.take(&key).and_then(|entry| match entry {
             CacheValue::Content(info) => Some(info),
             CacheValue::Tool(_) => None,
         })
@@ -314,7 +325,7 @@ impl TruncationStore {
     }
 
     /// Returns current entry counts after first evicting any expired
-    /// entries (see [`expire_entries`]).
+    /// entries (see `expire_entries`).
     ///
     /// # Examples
     ///
@@ -372,10 +383,10 @@ impl TruncationStore {
     // Removes and returns an entry by key after first expiring stale ones,
     // implementing the one-shot "take" semantics shared by all public
     // lookup methods.
-    fn take(&self, key: CacheKey) -> Option<CacheValue> {
+    fn take(&self, key: &CacheKey) -> Option<CacheValue> {
         let mut state = self.lock_state();
         expire_entries(&mut state, self.ttl);
-        state.entries.remove(&key).map(|entry| entry.value)
+        state.entries.remove(key).map(|entry| entry.value)
     }
 
     // Locks the internal state, recovering from mutex poisoning (a prior

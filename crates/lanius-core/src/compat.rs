@@ -20,13 +20,13 @@
 //!   "claim" primitive and the raw HTTP request-shape helpers for discovering a Kiro
 //!   profile ARN. The actual HTTP call is issued by [`crate::auth::AuthManager`], which
 //!   reuses this type so the "only try once" logic isn't duplicated.
-//! - **Host rewriting** ([`control_plane_host`], [`chat_host`], [`ControlPlaneHostHook`],
-//!   [`ChatHostFallbackHook`]) — some control-plane-only operations (listing models,
+//! - **Host rewriting** ([`control_plane_host`], [`chat_host`], `ControlPlaneHostHook`,
+//!   `ChatHostFallbackHook`) — some control-plane-only operations (listing models,
 //!   listing usage limits, MCP) must always go to the AWS `q.<region>.amazonaws.com` host
 //!   even when the account would otherwise use the paid `runtime.<region>.kiro.dev` host,
 //!   and profile-less accounts must always fall back to the control-plane host for chat
 //!   too, since the paid runtime host requires a profile ARN.
-//! - **Model ID formatting** ([`ModelIdFormatHook`], [`rewrite_model_ids`],
+//! - **Model ID formatting** (`ModelIdFormatHook`, [`rewrite_model_ids`],
 //!   [`is_claude_client`]) — Claude Code and similar clients expect model IDs with dashes
 //!   (`claude-sonnet-4-6`) rather than the dotted form Kiro's `/v1/models` endpoint returns
 //!   (`claude-sonnet-4.6`); this hook rewrites `GET /v1/models` responses only when the
@@ -307,7 +307,7 @@ impl ToolNameAliases {
     /// legal, the previously assigned alias if one exists, or else a freshly generated one.
     ///
     /// Alias generation: a `t_<sha256-prefix>_<sanitized-suffix>` name is built (see
-    /// [`build_alias`]) starting with a 12-hex-character digest prefix; if that alias is
+    /// `build_alias`) starting with a 12-hex-character digest prefix; if that alias is
     /// already reserved by a different original name or already claimed as an alias for a
     /// *different* original name, the digest prefix is lengthened by 4 hex characters and
     /// retried. Because the digest is a cryptographic hash of the full original name, this
@@ -752,7 +752,7 @@ impl RequestHook for ToolNameAliasHook {
 /// Shared "attempt at most once" primitive and wire-format helpers for auto-discovering a
 /// Kiro profile ARN. The atomic flag makes [`ProfileArnAutofetchHook::claim_fetch`] safe to
 /// call from multiple concurrent requests without duplicate lookups; the actual HTTP call
-/// is made by [`crate::auth::AuthManager::autofetch_profile_arn`], which holds an instance
+/// is made by `crate::auth::AuthManager::autofetch_profile_arn`, which holds an instance
 /// of this hook for its lifetime.
 #[derive(Default)]
 pub struct ProfileArnAutofetchHook {

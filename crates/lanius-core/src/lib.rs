@@ -7,21 +7,21 @@
 //!
 //! A request flows through the crate roughly like this:
 //!
-//! 1. **Ingress (`api`, `server`)** — [`api::openai`] and [`api::anthropic`]
+//! 1. **Ingress (`api`, `server`)** — [`api::openai_router`] and [`api::anthropic_router`]
 //!    expose HTTP routes that accept requests in each provider's wire format.
 //!    [`server`] wires those routers together behind a single `axum` app,
 //!    adding CORS, panic recovery, tracing and proxy-key authentication.
 //! 2. **Conversion (`convert`)** — incoming OpenAI/Anthropic payloads are
 //!    translated into Kiro's internal request shape (and back again for
-//!    responses) by the converters in [`convert`], with [`convert::guards`]
+//!    responses) by the converters in [`convert`], with [`convert::check_payload_size`] / [`convert::trim_payload_to_limit`]
 //!    enforcing invariants along the way.
 //! 3. **Model resolution + auth (`model`, `auth`)** — the requested model
 //!    name is normalized and resolved to a concrete Kiro model id via
-//!    [`model::resolver`], using catalog data cached by [`model::cache`].
+//!    [`model::ModelResolver`], using catalog data cached by [`model::ModelInfoCache`].
 //!    [`auth`] keeps the single configured account's OAuth/SSO tokens fresh.
-//! 4. **Upstream call (`upstream`)** — [`upstream::client`] sends the
+//! 4. **Upstream call (`upstream`)** — [`upstream::KiroHttpClient`] sends the
 //!    converted request to Kiro over HTTP with retry/backoff, and
-//!    [`upstream::parser`] / [`upstream::stream`] decode Kiro's AWS
+//!    [`upstream::AwsEventStreamParser`] / [`upstream::parse_kiro_stream`] decode Kiro's AWS
 //!    event-stream response (including bracket-style `[Called ...]` tool
 //!    calls) into a provider-agnostic sequence of events.
 //! 5. **Post-processing** — [`truncation`] detects and helps recover from
@@ -42,31 +42,18 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::all)]
 
-/// HTTP-facing API surface: OpenAI- and Anthropic-compatible route handlers.
 pub mod api;
-/// OAuth/SSO authentication and token refresh against Kiro/AWS.
 pub mod auth;
-/// Client-compatibility shims (e.g. rewriting model ids for specific clients).
 pub mod compat;
-/// Environment-driven configuration structs, defaults, and constants.
 pub mod config;
-/// Bidirectional conversion between OpenAI/Anthropic and Kiro request/response shapes.
 pub mod convert;
-/// Unified error type and Kiro/network error classification and enhancement.
 pub mod error;
-/// Model catalog caching and model-name resolution/normalization.
 pub mod model;
-/// `axum`-based HTTP server: route aggregation, CORS, and auth middleware.
 pub mod server;
-/// Token estimation for requests when Kiro does not report usage.
 pub mod tokenizer;
-/// Cache and recovery-prompt helpers for content/tool-call truncation.
 pub mod truncation;
-/// Self-update support: GitHub release lookup, signed download, and archive extraction.
 pub mod update;
-/// Kiro upstream HTTP client, AWS event-stream parsing, and unified stream events.
 pub mod upstream;
-/// Fingerprinting, user-agent, id generation, and spaced-JSON helpers.
 pub mod utils;
 
 pub use config::Config;
@@ -77,6 +64,6 @@ pub use error::{GatewayError, Result};
 // that operates on it, plus the tool-name-alias table needed to call it. Everything
 // else under `api`/`convert`/`model`/`upstream` is `pub(crate)` and reached only
 // through each module's own facade (see e.g. `crate::upstream::KiroHttpClient`).
-pub use api::openai::ChatCompletionRequest;
+pub use api::ChatCompletionRequest;
 pub use compat::ToolNameAliases;
 pub use convert::build_kiro_payload;

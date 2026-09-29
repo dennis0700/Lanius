@@ -3,12 +3,12 @@
 //! This module is the gateway's single source of truth for "how do we prove who we are
 //! to Kiro/AWS right now". It ties together three concerns that live in submodules:
 //!
-//! - [`credentials`] — loading raw credentials (access/refresh tokens, OIDC client
+//! - `credentials` — loading raw credentials (access/refresh tokens, OIDC client
 //!   id/secret, profile ARN, region) from the environment, a JSON credentials file, or a
 //!   `kiro-cli` SQLite database, with a defined priority order.
-//! - [`refresh`] — performing the actual network call that exchanges a refresh token for
+//! - `refresh` — performing the actual network call that exchanges a refresh token for
 //!   a fresh access token, for either the "Kiro Desktop" flow or the AWS SSO OIDC flow.
-//! - [`AuthManager`] (this file) — owning the mutable, shared [`TokenState`] behind a
+//! - [`AuthManager`] (this file) — owning the mutable, shared `TokenState` behind a
 //!   [`tokio::sync::Mutex`], deciding *when* a refresh is needed, retrying refreshes that
 //!   fail because on-disk SQLite credentials were rotated out from under us, persisting
 //!   refreshed credentials back to disk, and best-effort auto-fetching a Kiro "profile
@@ -24,7 +24,7 @@
 //!
 //! Security note: this module handles live access/refresh tokens and OIDC client secrets.
 //! Errors constructed here are careful to never embed raw upstream response bodies (which
-//! may contain tokens) in messages surfaced to callers — see [`sqlite_refresh_failed_error`]
+//! may contain tokens) in messages surfaced to callers — see `sqlite_refresh_failed_error`
 //! and `refresh::into_result`.
 
 mod credentials;
@@ -49,7 +49,7 @@ use refresh::{RefreshEndpoints, RefreshError, RefreshOutcome};
 /// Which refresh-token flow a set of credentials should use.
 ///
 /// This is derived (never configured directly) from whether an OIDC client id/secret pair
-/// is present: see [`AuthType::from_credentials`].
+/// is present: see `AuthType::from_credentials`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthType {
     /// The Kiro desktop app's own refresh endpoint (refresh token only, no client
@@ -95,7 +95,7 @@ struct TokenState {
 /// persisting, and reading them.
 ///
 /// There is normally one `AuthManager` per running gateway. All async methods that touch
-/// [`TokenState`] take the internal [`tokio::sync::Mutex`] lock, so concurrent callers are
+/// `TokenState` take the internal [`tokio::sync::Mutex`] lock, so concurrent callers are
 /// serialized: only one refresh (network request) happens at a time, and callers that ask
 /// for a token while a refresh is already in flight simply wait for the same lock rather
 /// than triggering a second, redundant refresh.
@@ -107,7 +107,7 @@ pub struct AuthManager {
 }
 
 impl AuthManager {
-    /// Builds a new manager by loading credentials per [`Credentials::load`] (environment,
+    /// Builds a new manager by loading credentials per `Credentials::load` (environment,
     /// then credentials file or SQLite database) and deriving the initial [`AuthType`] and
     /// API region from them.
     ///
@@ -146,7 +146,7 @@ impl AuthManager {
     ///    expiring, reload from SQLite first — another process (the `kiro-cli` itself) may
     ///    have already refreshed and written a newer token there, which saves a network
     ///    round trip and avoids racing with that other writer.
-    /// 3. Otherwise perform an actual network refresh via [`refresh::refresh`].
+    /// 3. Otherwise perform an actual network refresh via `refresh::refresh`.
     ///
     /// One SQLite-specific recovery path: if the refresh network call fails with HTTP 400
     /// and we are SQLite-backed, we tolerate a still-valid (not yet expired, just within
@@ -254,7 +254,7 @@ impl AuthManager {
 
     /// Convenience wrapper around [`AuthManager::access_token`] that also kicks off a
     /// best-effort, at-most-once profile ARN auto-fetch (see
-    /// [`AuthManager::autofetch_profile_arn`]) using the token it just obtained.
+    /// `AuthManager::autofetch_profile_arn`) using the token it just obtained.
     ///
     /// May perform up to two network requests (token refresh, then the profile lookup).
     /// The profile auto-fetch failure is logged and swallowed — it never turns into an
@@ -381,7 +381,7 @@ impl AuthManager {
 
     /// Returns the currently active API region (from detected profile ARN region, SSO
     /// region, or the configured default region, in that priority order — see
-    /// [`final_api_region`]). Does not perform any I/O.
+    /// `final_api_region`). Does not perform any I/O.
     ///
     /// # Examples
     ///
@@ -643,7 +643,7 @@ impl AuthManager {
         };
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(credentials::sqlite_error)?;
+            .map_err(|error| credentials::sqlite_error(&error))?;
         // Try the key the credentials were originally loaded from first (if any), then
         // fall back through the known SQLite token keys in priority order, so we update
         // whichever row is actually authoritative rather than always writing the first key.
@@ -715,12 +715,13 @@ fn existing_json_object(path: &Path) -> Result<Map<String, Value>> {
     }
     let raw = fs::read_to_string(path)?;
     let value: Value = serde_json::from_str(&raw)?;
-    value.as_object().cloned().ok_or_else(|| {
-        GatewayError::Auth(format!(
+    let Value::Object(object) = value else {
+        return Err(GatewayError::Auth(format!(
             "credentials file {} root is not an object",
             path.display()
-        ))
-    })
+        )));
+    };
+    Ok(object)
 }
 
 /// Builds a user-facing error for a refresh failure that returned HTTP 400 even after the
@@ -805,12 +806,9 @@ fn merge_and_save_sqlite_key(
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let mut object = match serde_json::from_str::<Value>(&raw)
-        .ok()
-        .and_then(|value| value.as_object().cloned())
-    {
-        Some(object) => object,
-        None => return Ok(false),
+    let mut object = match serde_json::from_str::<Value>(&raw) {
+        Ok(Value::Object(object)) => object,
+        _ => return Ok(false),
     };
     object.insert(
         "access_token".to_string(),
