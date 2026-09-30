@@ -110,6 +110,16 @@ export component SettingsView {
     property <bool> show-key: false;
     in property <bool> key-copied: false;
 
+    property <[string]> log-levels: ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+
+    pure function log-level-index(level: string) -> int {
+        level == "ERROR" ? 0
+            : (level == "WARN" || level == "WARNING") ? 1
+            : level == "DEBUG" ? 3
+            : level == "TRACE" ? 4
+            : 2
+    }
+
     // Hints anchor to a snapshot of the hovered control's position, so drop an
     // open hint as soon as the page scrolls underneath the cursor. Declared
     // first (behind everything) and rejecting the event so the surrounding
@@ -302,6 +312,21 @@ export component SettingsView {
                                 }
                             }
                         }
+                        SettingRow {
+                            icon: Icon.terminal;
+                            label: Tr.log_level;
+                            description: Tr.log_level_desc;
+                            Select {
+                                width: 120px;
+                                height: 38px;
+                                options: root.log-levels;
+                                selected-index: root.log-level-index(root.form.log_level);
+                                selected(index, value) => {
+                                    root.form.log_level = value;
+                                    root.form-changed();
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -414,7 +439,7 @@ export component SettingsView {
                                 width: 72px;
                                 horizontal-alignment: center;
                                 text: root.form.server_port;
-                                placeholder: "8000";
+                                placeholder: "18000";
                                 edited(value) => {
                                     root.form.server_port = value;
                                     root.form-changed();

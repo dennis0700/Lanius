@@ -371,6 +371,12 @@ impl KiroHttpClient {
                             }
                         }
                     }
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_retries,
+                        status = status.as_u16(),
+                        "upstream returned retryable status; backing off"
+                    );
                     tokio::time::sleep(retry_delay(attempt)).await;
                 }
                 Ok(response) => return Err(upstream_error(response).await),
@@ -398,6 +404,12 @@ impl KiroHttpClient {
         }
 
         if let Some((status, body)) = last_upstream {
+            // The caller reports the resulting error; this only records why.
+            tracing::debug!(
+                attempts = max_retries,
+                status = status.as_u16(),
+                "upstream retries exhausted"
+            );
             return Err(upstream_error_from_body(status, &body));
         }
         Err(last_network_error.unwrap_or_else(|| {

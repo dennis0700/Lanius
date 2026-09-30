@@ -21,6 +21,30 @@
 mod anthropic;
 mod openai;
 
+use axum::response::Response;
+
+/// Operator-facing diagnostic text attached to an error response as a
+/// response extension. `crate::server`'s failed-response logging middleware
+/// takes it out and logs it; it is never serialized to clients.
+#[derive(Debug, Clone)]
+pub(crate) struct ErrorDetail(String);
+
+impl ErrorDetail {
+    /// Attaches `detail` to `response` and returns the response.
+    pub(crate) fn attach(mut response: Response, detail: impl Into<String>) -> Response {
+        response.extensions_mut().insert(Self(detail.into()));
+        response
+    }
+
+    /// Removes and returns the detail attached to `response`, if any.
+    pub(crate) fn take(response: &mut Response) -> Option<String> {
+        response
+            .extensions_mut()
+            .remove::<Self>()
+            .map(|detail| detail.0)
+    }
+}
+
 pub use anthropic::{
     AnthropicMessage, AnthropicMessageContent, AnthropicMessageRole, AnthropicMessagesRequest,
     AnthropicSseFormatter, AnthropicState, AnthropicTool, RequestTokenInput, SystemPrompt,

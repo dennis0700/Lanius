@@ -1,6 +1,6 @@
 [package]
 name = "lanius-core"
-version = "0.1.6"
+version = "0.1.7"
 description = "OpenAI- and Anthropic-compatible bridge for the Kiro (AWS CodeWhisperer) API"
 license = "AGPL-3.0"
 edition = "2024"
@@ -46,3 +46,4 @@ tokio = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
 minisign = { workspace = true }
+tracing-subscriber = { workspace = true }

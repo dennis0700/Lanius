@@ -34,6 +34,7 @@ use super::models::{
 };
 use super::sse::{OpenAiFormatContext, collect_openai_response, encode_openai_sse};
 use crate::api::DEFAULT_PING_INTERVAL;
+use crate::api::ErrorDetail;
 use crate::auth::AuthManager;
 use crate::compat::ToolNameAliases;
 use crate::config::{APP_TITLE, APP_VERSION, Config};
@@ -377,7 +378,14 @@ where
                 }
             }
             Ok(None) => return Ok(source),
-            Err(_) if attempt + 1 < tries => continue,
+            Err(_) if attempt + 1 < tries => {
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    timeout = ?timeout,
+                    "first token timed out; retrying upstream request"
+                );
+                continue;
+            }
             Err(_) => return Err(GatewayError::FirstTokenTimeout(timeout)),
         }
     }
@@ -419,7 +427,7 @@ fn streaming_response(
                 frame = frames.next() => match frame {
                     Some(Ok(frame)) => yield Ok(bytes::Bytes::from(frame)),
                     Some(Err(error)) => {
-                        tracing::warn!(error = %error, "OpenAI SSE encoder failed");
+                        tracing::error!(error = %error, "OpenAI SSE encoder failed");
                         yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
                         break;
                     }
@@ -483,9 +491,10 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 /// simpler `{"detail": ...}` bodies with a status derived from
 /// `error.http_status()`.
 fn gateway_error_response(error: GatewayError) -> Response {
+    let detail = error.log_detail();
     let status =
         StatusCode::from_u16(error.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    match error {
+    let response = match error {
         GatewayError::Upstream {
             status: upstream_status,
             info,
@@ -499,17 +508,19 @@ fn gateway_error_response(error: GatewayError) -> Response {
             (StatusCode::BAD_REQUEST, Json(json!({"detail": message}))).into_response()
         }
         _ => (status, Json(json!({"detail": "Internal Server Error"}))).into_response(),
-    }
+    };
+    ErrorDetail::attach(response, detail)
 }
 
 /// Builds the 422 response returned for malformed or empty-message
 /// requests.
 fn validation_error(message: &str) -> Response {
-    (
+    let response = (
         StatusCode::UNPROCESSABLE_ENTITY,
         Json(json!({"detail": message, "body": ""})),
     )
-        .into_response()
+        .into_response();
+    ErrorDetail::attach(response, message)
 }
 
 /// Converts chat messages to plain [`Value`]s (silently dropping any

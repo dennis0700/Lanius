@@ -514,7 +514,9 @@ fn is_truthy(value: &Value) -> bool {
 
 fn network_error(error: &reqwest::Error) -> GatewayError {
     let info = classify_network_error(error);
-    tracing::warn!(
+    // Callers surface the resulting error via `GatewayError::report`; keep
+    // this at debug so it doesn't duplicate that line.
+    tracing::debug!(
         category = %info.category,
         details = %info.technical_details,
         "upstream stream read failed"

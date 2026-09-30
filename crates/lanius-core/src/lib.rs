@@ -56,6 +56,9 @@ pub mod update;
 pub mod upstream;
 pub mod utils;
 
+#[cfg(test)]
+mod test_log;
+
 pub use config::Config;
 pub use error::{GatewayError, Result};
 

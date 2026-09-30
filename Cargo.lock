@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "lanius-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3348,7 +3348,7 @@ dependencies = [
 
 [[package]]
 name = "lanius-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-stream",
  "axum",
@@ -3378,6 +3378,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "tracing-subscriber",
  "urlencoding",
  "uuid",
  "whoami",
@@ -3385,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "lanius-gui"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arboard",
  "auto-launch",

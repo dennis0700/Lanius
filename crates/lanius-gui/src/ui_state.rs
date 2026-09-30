@@ -19,7 +19,7 @@ use crate::{ConfigForm, LogRow, UsageView};
 
 /// Port used to recover the settings form when the user clears/leaves blank
 /// the port field, or types something out of the valid TCP port range.
-pub const FALLBACK_PORT: u16 = 8000;
+pub const FALLBACK_PORT: u16 = 18000;
 
 /// Converts an `Option<&String>` into a `SharedString`, using Slint's empty
 /// `SharedString` for `None` (the settings form has no concept of "unset"
@@ -49,6 +49,7 @@ pub fn form_from_config(config: &AppConfig) -> ConfigForm {
         auto_launch: config.auto_launch,
         auto_start_server: config.auto_start_server,
         auto_check_updates: config.auto_check_updates,
+        log_level: config.log_level.trim().to_ascii_uppercase().into(),
     }
 }
 
@@ -115,7 +116,20 @@ pub fn apply_form(config: &AppConfig, form: &ConfigForm) -> AppConfig {
         auto_launch: form.auto_launch,
         auto_start_server: form.auto_start_server,
         auto_check_updates: form.auto_check_updates,
+        log_level: apply_log_level(&config.log_level, form.log_level.as_str()),
         ..config.clone()
+    }
+}
+
+/// Resolves the log level to persist: keeps the stored spelling when the
+/// form only differs in case/whitespace (so loading "info" doesn't register
+/// as an unsaved change), and ignores an empty form value.
+fn apply_log_level(current: &str, selected: &str) -> String {
+    let selected = selected.trim();
+    if selected.is_empty() || selected.eq_ignore_ascii_case(current.trim()) {
+        current.to_string()
+    } else {
+        selected.to_ascii_uppercase()
     }
 }
 
@@ -252,6 +266,27 @@ mod tests {
 
         let restored = apply_form(&config, &form);
         assert_eq!(restored, config, "a round trip must not change anything");
+    }
+
+    #[test]
+    fn log_level_is_editable_without_spurious_changes() {
+        let config = AppConfig {
+            log_level: "info".into(),
+            ..Default::default()
+        };
+        let mut form = form_from_config(&config);
+        assert_eq!(form.log_level, "INFO");
+        assert_eq!(
+            apply_form(&config, &form).log_level,
+            "info",
+            "a case-only difference must not count as a change"
+        );
+
+        form.log_level = "DEBUG".into();
+        assert_eq!(apply_form(&config, &form).log_level, "DEBUG");
+
+        form.log_level = "".into();
+        assert_eq!(apply_form(&config, &form).log_level, "info");
     }
 
     #[test]

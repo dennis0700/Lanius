@@ -97,7 +97,7 @@ openssl rand -hex 32
 PROXY_API_KEY=<上面生成的值>
 KIRO_REGION=us-east-1
 SERVER_HOST=127.0.0.1
-SERVER_PORT=8000
+SERVER_PORT=18000
 KIRO_CREDS_FILE=/opt/lanius/creds.json
 LOG_LEVEL=INFO
 ```
@@ -159,8 +159,8 @@ systemctl enable --now lanius
 ```sh
 systemctl status lanius
 journalctl -u lanius -f                     # 跟踪日志
-curl -fsS http://127.0.0.1:8000/health      # 无需认证的健康检查
-curl -fsS http://127.0.0.1:8000/v1/models \
+curl -fsS http://127.0.0.1:18000/health      # 无需认证的健康检查
+curl -fsS http://127.0.0.1:18000/v1/models \
   -H "Authorization: Bearer <PROXY_API_KEY>"
 ```
 

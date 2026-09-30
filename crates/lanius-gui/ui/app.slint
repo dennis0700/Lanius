@@ -42,6 +42,7 @@ export component MainWindow inherits Window {
     in property <UsageView> usage;
 
     in property <[LogRow]> logs;
+    in property <string> logs-text;
     in property <string> logs-count-text;
 
     in property <string> example-code;
@@ -383,6 +384,7 @@ export component MainWindow inherits Window {
                             LogsView {
                                 vertical-stretch: 1;
                                 logs: root.logs;
+                                logs-text: root.logs-text;
                                 count-text: root.logs-count-text;
                                 clear-logs => {
                                     root.clear-logs();

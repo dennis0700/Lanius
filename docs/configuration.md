@@ -16,7 +16,7 @@ default; this table mirrors it.
 | Variable | Default | Purpose |
 |---|---|---|
 | `SERVER_HOST` | `0.0.0.0` | Bind address for the gateway's HTTP server. |
-| `SERVER_PORT` | `8000` | Bind port. |
+| `SERVER_PORT` | `18000` | Bind port. |
 | `PROXY_API_KEY` | *(insecure placeholder — must be set)* | Bearer key clients must present to Lanius. Validation fails if empty/whitespace. |
 
 ## Kiro / AWS connection

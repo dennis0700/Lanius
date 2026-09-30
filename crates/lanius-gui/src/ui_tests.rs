@@ -87,6 +87,7 @@ fn ui_renders_every_view_and_reports_every_callback() {
         "plain line".to_string(),
     ]);
     ui.set_logs(ModelRc::new(VecModel::from(ui_state::log_rows(&processed))));
+    ui.set_logs_text(logs::display_text(&processed).into());
     ui.set_logs_count_text("2 events captured".into());
 
     ui.set_detected_cli_dbs(ModelRc::new(VecModel::from(vec![SharedString::from(
@@ -278,6 +279,7 @@ fn ui_renders_every_view_and_reports_every_callback() {
     ui.set_usage(ui_state::usage_placeholder(false, "HTTP 500"));
     ui.set_models(ModelRc::new(VecModel::<ModelRow>::default()));
     ui.set_logs(ModelRc::new(VecModel::<LogRow>::default()));
+    ui.set_logs_text("".into());
     ui.set_current_view(0);
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(60));
     assert!(!ui.get_is_running());

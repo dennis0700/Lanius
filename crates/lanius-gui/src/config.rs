@@ -122,7 +122,7 @@ impl Default for AppConfig {
             kiro_cli_db_file: None,
             proxy_api_key: String::new(),
             server_host: "127.0.0.1".to_string(),
-            server_port: 8000,
+            server_port: 18000,
             kiro_region: "us-east-1".to_string(),
             vpn_proxy_url: None,
             first_token_timeout: 15.0,
@@ -558,7 +558,7 @@ mod tests {
         let loaded = load_config_from(&path)
             .await
             .expect("missing file is not an error");
-        assert_eq!(loaded.server_port, 8000);
+        assert_eq!(loaded.server_port, 18000);
 
         let saved = AppConfig {
             server_port: 9999,

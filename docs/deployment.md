@@ -100,7 +100,7 @@ openssl rand -hex 32
 PROXY_API_KEY=<the value generated above>
 KIRO_REGION=us-east-1
 SERVER_HOST=127.0.0.1
-SERVER_PORT=8000
+SERVER_PORT=18000
 KIRO_CREDS_FILE=/opt/lanius/creds.json
 LOG_LEVEL=INFO
 ```
@@ -169,8 +169,8 @@ Check it:
 ```sh
 systemctl status lanius
 journalctl -u lanius -f                     # follow logs
-curl -fsS http://127.0.0.1:8000/health      # unauthenticated health check
-curl -fsS http://127.0.0.1:8000/v1/models \
+curl -fsS http://127.0.0.1:18000/health      # unauthenticated health check
+curl -fsS http://127.0.0.1:18000/v1/models \
   -H "Authorization: Bearer <PROXY_API_KEY>"
 ```
 

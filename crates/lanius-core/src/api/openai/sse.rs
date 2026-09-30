@@ -193,7 +193,7 @@ where
                     // reset, ...). Surface it as an OpenAI-style error frame
                     // instead of silently ending the stream, which clients
                     // report as "stream ended without finish_reason".
-                    tracing::warn!(error = %error, "upstream stream failed mid-response");
+                    error.report("POST /v1/chat/completions stream");
                     let trailing_content = context
                         .tool_name_aliases
                         .restore_text_fragment(&mut alias_text_pending, "", true);
@@ -783,6 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn mid_stream_error_emits_error_frame_before_done() {
+        let (logs, _guard) = crate::test_log::CapturedLogs::install();
         let output = frames(vec![
             Ok(KiroEvent::content("partial")),
             Err(crate::error::GatewayError::StreamReadTimeout(
@@ -790,6 +791,14 @@ mod tests {
             )),
         ])
         .await;
+        assert!(
+            logs.has(
+                "ERROR",
+                &["POST /v1/chat/completions stream failed", "status=504"]
+            ),
+            "mid-stream failures must be logged: {:?}",
+            logs.lines()
+        );
         assert_eq!(output.len(), 3);
         assert_eq!(
             json_frame(&output[0])["choices"][0]["delta"]["content"],

@@ -127,7 +127,7 @@ pub fn fallback_models() -> Vec<&'static str> {
 /// Default bind host when `SERVER_HOST` is not set.
 pub const DEFAULT_SERVER_HOST: &str = "0.0.0.0";
 /// Default bind port when `SERVER_PORT` is not set.
-pub const DEFAULT_SERVER_PORT: u16 = 8000;
+pub const DEFAULT_SERVER_PORT: u16 = 18000;
 
 /// Controls how much internal debug logging/dumping the gateway performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -547,7 +547,7 @@ mod tests {
     fn defaults_match_documented_values() {
         let c = Config::default();
         assert_eq!(c.server_host, "0.0.0.0");
-        assert_eq!(c.server_port, 8000);
+        assert_eq!(c.server_port, 18000);
         assert_eq!(c.region, "us-east-1");
         assert_eq!(c.tool_description_max_length, 10_000);
         assert_eq!(c.kiro_max_payload_bytes, 600_000);

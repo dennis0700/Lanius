@@ -315,6 +315,7 @@ impl Controller {
         if let Ok(mut tr) = self.translations.lock() {
             tr.set_language(config.language.as_deref().unwrap_or_default());
         }
+        crate::log_capture::apply_log_level(&config.log_level);
 
         if needs_save {
             if let Err(e) = config::save_config(&config).await {
@@ -784,6 +785,7 @@ impl Controller {
 
         match config::save_config(&updated).await {
             Ok(()) => {
+                crate::log_capture::apply_log_level(&updated.log_level);
                 let running = self.is_running().await;
                 {
                     let mut state = self.state.lock().await;
@@ -953,9 +955,11 @@ impl Controller {
         if changed {
             let processed = logs::process(&lines);
             let rows = ui_state::log_rows(&processed);
+            let text = logs::display_text(&processed);
             let count_text = self.tf("eventsCaptured", &[("count", &lines.len().to_string())]);
             self.with_ui(move |ui| {
                 ui.set_logs(slint::ModelRc::new(VecModel::from(rows)));
+                ui.set_logs_text(text.into());
                 ui.set_logs_count_text(count_text.into());
             });
         }

@@ -111,6 +111,8 @@ pub fn apply(tr: &Tr, lookup: impl Fn(&str) -> SharedString) {
     tr.set_supported_models(lookup("supportedModels"));
     tr.set_auto_check_updates(lookup("autoCheckUpdates"));
     tr.set_auto_check_updates_desc(lookup("autoCheckUpdatesDesc"));
+    tr.set_log_level(lookup("logLevel"));
+    tr.set_log_level_desc(lookup("logLevelDesc"));
     tr.set_updates_section(lookup("updatesSection"));
     tr.set_update_check_now(lookup("updateCheckNow"));
     tr.set_update_checking(lookup("updateChecking"));

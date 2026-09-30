@@ -9,6 +9,7 @@ import { IconButton, Panel } from "common.slint";
 
 export component LogsView {
     in property <[LogRow]> logs;
+    in property <string> logs-text;
     in property <string> count-text;
     in-out property <bool> auto-scroll: true;
 
@@ -153,32 +154,18 @@ export component LogsView {
                         padding-right: 20px;
                         padding-top: 16px;
                         padding-bottom: 16px;
-                        spacing: 2px;
-
-                        for row in root.logs: HorizontalLayout {
-                            spacing: 12px;
-                            alignment: start;
+                        // A single read-only TextInput (rather than per-row Text
+                        // elements) so users can select across lines and copy.
+                        TextInput {
+                            text: root.logs-text;
+                            read-only: true;
+                            single-line: false;
+                            wrap: word-wrap;
+                            color: Theme.palette.text_primary;
+                            font-size: Theme.typography.size_base;
+                            font-family: Brand.mono_font;
                             vertical-stretch: 0;
                             height: self.preferred-height;
-
-                            Text {
-                                text: row.time;
-                                color: Brand.stone_500;
-                                font-size: Theme.typography.size_base;
-                                font-family: Brand.mono_font;
-                                width: row.time == "" ? 0px : 72px;
-                                horizontal-alignment: right;
-                                vertical-stretch: 0;
-                            }
-                            Text {
-                                text: row.text;
-                                color: Theme.palette.text_primary;
-                                font-size: Theme.typography.size_base;
-                                font-family: Brand.mono_font;
-                                horizontal-stretch: 1;
-                                vertical-stretch: 0;
-                                wrap: word-wrap;
-                            }
                         }
                     }
                 }

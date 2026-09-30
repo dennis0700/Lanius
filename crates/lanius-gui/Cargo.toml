@@ -1,6 +1,6 @@
 [package]
 name = "lanius-gui"
-version = "0.1.6"
+version = "0.1.7"
 description = "Lanius Desktop App (Slint UI)"
 license = "AGPL-3.0"
 edition = "2024"

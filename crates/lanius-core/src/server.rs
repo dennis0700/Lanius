@@ -29,7 +29,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
-use crate::api::{AnthropicState, OpenAiState, anthropic_router, openai_router};
+use crate::api::{AnthropicState, ErrorDetail, OpenAiState, anthropic_router, openai_router};
 use crate::auth::AuthManager;
 use crate::compat::{self, CompatibilityPipeline};
 use crate::config::Config;
@@ -148,9 +148,82 @@ fn app(state: AppState) -> Router {
         .route("/account", get(account))
         .with_state(state)
         .layer(middleware::from_fn(model_id_format_middleware))
+        .layer(middleware::from_fn(failed_response_log_middleware))
         .layer(local_cors())
-        .layer(TraceLayer::new_for_http())
+        // Failures are logged by `failed_response_log_middleware`; disable
+        // tower-http's own 5xx ERROR line so each failure is logged once.
+        .layer(TraceLayer::new_for_http().on_failure(()))
         .layer(CatchPanicLayer::new())
+}
+
+// Logs every non-success response with its method, path, status, latency
+// and (when a handler attached one) the operator-facing `ErrorDetail`, so
+// rejected or failed requests show up in the default `info` log output
+// (tower-http's `TraceLayer` only logs requests at DEBUG and never logs 4xx).
+// 5xx responses are logged at ERROR, 4xx at WARN, except 404 (unknown
+// routes such as `/favicon.ico` probes), which is DEBUG noise. The detail
+// extension is removed before the response leaves the server.
+async fn failed_response_log_middleware(request: Request<Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let started = std::time::Instant::now();
+    let mut response = next.run(request).await;
+    let status = response.status();
+    if !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let detail = match ErrorDetail::take(&mut response) {
+        Some(detail) => detail,
+        None => {
+            // Responses built without an `ErrorDetail` (e.g. axum's own
+            // extractor rejections) carry their reason in a small body;
+            // buffer it so it can be logged, then hand it back intact.
+            let (parts, body) = response.into_parts();
+            let (text, body) = small_body_text(body).await;
+            response = Response::from_parts(parts, body);
+            text.or_else(|| status.canonical_reason().map(str::to_owned))
+                .unwrap_or_default()
+        }
+    };
+    let code = status.as_u16();
+    if status.is_server_error() {
+        tracing::error!(status = code, latency_ms, error = %detail, "{method} {path} failed");
+    } else if status == StatusCode::NOT_FOUND {
+        tracing::debug!(status = code, latency_ms, error = %detail, "{method} {path} rejected");
+    } else {
+        tracing::warn!(status = code, latency_ms, error = %detail, "{method} {path} rejected");
+    }
+    response
+}
+
+// Upper bound for buffering an error body just to log it.
+const MAX_LOGGED_ERROR_BODY: u64 = 4096;
+
+// Reads `body` into memory only when its exact length is known and small
+// (never streaming bodies), returning its text for logging together with an
+// equivalent body to send on. Anything else is passed through untouched.
+async fn small_body_text(body: Body) -> (Option<String>, Body) {
+    use axum::body::HttpBody as _;
+
+    let Some(len) = body
+        .size_hint()
+        .exact()
+        .filter(|len| (1..=MAX_LOGGED_ERROR_BODY).contains(len))
+    else {
+        return (None, body);
+    };
+    let limit = usize::try_from(len).unwrap_or(usize::MAX);
+    match to_bytes(body, limit).await {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+            ((!text.is_empty()).then_some(text), Body::from(bytes))
+        }
+        // Only reachable if an in-memory body of known size fails to read
+        // or exceeds the size it advertised; the original body is consumed
+        // by then, so the client gets an empty body with the same status.
+        Err(_) => (None, Body::empty()),
+    }
 }
 
 // CORS layer restricted to localhost/127.0.0.1 origins (any scheme/port),
@@ -720,5 +793,243 @@ mod tests {
         )
             .into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    use crate::test_log::CapturedLogs;
+
+    fn request(method: Method, uri: &str, body: Body) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .unwrap_or_else(|error| panic!("request build failed: {error}"))
+    }
+
+    async fn body_bytes(response: Response) -> bytes::Bytes {
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap_or_else(|error| panic!("body must be readable: {error}"))
+    }
+
+    async fn run_logged(router: Router, request: Request<Body>) -> (Response, CapturedLogs) {
+        let (logs, _guard) = CapturedLogs::install();
+        let response = router
+            .layer(middleware::from_fn(failed_response_log_middleware))
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|never| match never {});
+        (response, logs)
+    }
+
+    #[tokio::test]
+    async fn failed_responses_are_logged_with_detail_that_never_reaches_the_client() {
+        let router = Router::new().route(
+            "/boom",
+            get(|| async {
+                ErrorDetail::attach(
+                    (StatusCode::BAD_GATEWAY, "public message").into_response(),
+                    "upstream error 502 [UNKNOWN]: secret detail",
+                )
+            }),
+        );
+        let (mut response, logs) =
+            run_logged(router, request(Method::GET, "/boom", Body::empty())).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(ErrorDetail::take(&mut response).is_none());
+        assert_eq!(&body_bytes(response).await[..], b"public message");
+        assert!(
+            logs.has("ERROR", &["GET /boom failed", "secret detail"]),
+            "5xx must be logged at ERROR with its detail: {:?}",
+            logs.lines()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejections_without_detail_log_their_small_body_and_keep_it_intact() {
+        let router = Router::new().route(
+            "/reject",
+            get(|| async { (StatusCode::UNAUTHORIZED, "Invalid or missing API Key") }),
+        );
+        let (response, logs) =
+            run_logged(router, request(Method::GET, "/reject", Body::empty())).await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            &body_bytes(response).await[..],
+            b"Invalid or missing API Key"
+        );
+        assert!(
+            logs.has(
+                "WARN",
+                &["GET /reject rejected", "Invalid or missing API Key"]
+            ),
+            "4xx must be logged at WARN with its body text: {:?}",
+            logs.lines()
+        );
+    }
+
+    #[tokio::test]
+    async fn large_and_streaming_error_bodies_pass_through_unbuffered() {
+        let large = "x".repeat(8192);
+        let large_for_route = large.clone();
+        let router = Router::new()
+            .route(
+                "/large",
+                get(move || {
+                    let body = large_for_route.clone();
+                    async move { (StatusCode::BAD_REQUEST, body) }
+                }),
+            )
+            .route(
+                "/stream",
+                get(|| async {
+                    let chunks = futures::stream::iter([
+                        Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(b"part1 ")),
+                        Ok(bytes::Bytes::from_static(b"part2")),
+                    ]);
+                    (StatusCode::BAD_GATEWAY, Body::from_stream(chunks))
+                }),
+            );
+
+        let (response, logs) = run_logged(
+            router.clone(),
+            request(Method::GET, "/large", Body::empty()),
+        )
+        .await;
+        assert_eq!(body_bytes(response).await, large.as_bytes());
+        assert!(
+            logs.has("WARN", &["GET /large rejected", "Bad Request"]),
+            "oversized bodies fall back to the status reason: {:?}",
+            logs.lines()
+        );
+
+        let (response, logs) =
+            run_logged(router, request(Method::GET, "/stream", Body::empty())).await;
+        assert_eq!(&body_bytes(response).await[..], b"part1 part2");
+        assert!(
+            logs.has("ERROR", &["GET /stream failed", "Bad Gateway"]),
+            "streaming bodies are never buffered: {:?}",
+            logs.lines()
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_responses_are_not_logged_and_404_is_debug_only() {
+        let router = Router::new().route("/ok", get(|| async { "ok" }));
+        let (response, logs) =
+            run_logged(router.clone(), request(Method::GET, "/ok", Body::empty())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            logs.lines().is_empty(),
+            "2xx must not be logged: {:?}",
+            logs.lines()
+        );
+
+        let (response, logs) =
+            run_logged(router, request(Method::GET, "/favicon.ico", Body::empty())).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            logs.has("DEBUG", &["GET /favicon.ico rejected"]),
+            "{:?}",
+            logs.lines()
+        );
+        assert!(
+            !logs.lines().iter().any(|line| line.starts_with("WARN")),
+            "404 must not be a warning: {:?}",
+            logs.lines()
+        );
+    }
+
+    // Full router with state built directly (no background model refresh).
+    fn test_app() -> Router {
+        let config = Arc::new(Config {
+            proxy_api_key: "test-key".into(),
+            ..Config::default()
+        });
+        let auth_manager = Arc::new(
+            AuthManager::new((*config).clone())
+                .unwrap_or_else(|error| panic!("auth manager must construct: {error}")),
+        );
+        let http_client = Arc::new(
+            KiroHttpClient::new(auth_manager.clone(), &config)
+                .unwrap_or_else(|error| panic!("http client must construct: {error}")),
+        );
+        let model_cache = Arc::new(ModelInfoCache::default());
+        model_cache.load_fallback();
+        let model_resolver = Arc::new(ModelResolver::from_config((*model_cache).clone(), &config));
+        app(AppState {
+            compat: Arc::new(CompatibilityPipeline::new()),
+            config,
+            auth_manager,
+            http_client,
+            model_cache,
+            model_resolver,
+            truncation_store: Arc::new(TruncationStore::default()),
+        })
+    }
+
+    #[tokio::test]
+    async fn real_routes_log_rejections_end_to_end() {
+        let (logs, _guard) = CapturedLogs::install();
+        let app = test_app();
+
+        let unauthorized = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/v1/chat/completions",
+                Body::from(r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#),
+            ))
+            .await
+            .unwrap_or_else(|never| match never {});
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let mut empty = request(
+            Method::POST,
+            "/v1/chat/completions",
+            Body::from(r#"{"model":"m","messages":[]}"#),
+        );
+        empty.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer test-key"),
+        );
+        let mut empty = app
+            .oneshot(empty)
+            .await
+            .unwrap_or_else(|never| match never {});
+        assert_eq!(empty.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(ErrorDetail::take(&mut empty).is_none());
+
+        assert!(
+            logs.has(
+                "WARN",
+                &["POST /v1/chat/completions rejected", "status=401"]
+            ),
+            "{:?}",
+            logs.lines()
+        );
+        assert!(
+            logs.has(
+                "WARN",
+                &[
+                    "POST /v1/chat/completions rejected",
+                    "status=422",
+                    "messages must contain at least one message"
+                ]
+            ),
+            "{:?}",
+            logs.lines()
+        );
+        assert_eq!(
+            logs.lines()
+                .iter()
+                .filter(|line| line.contains("rejected") || line.contains("failed"))
+                .count(),
+            2,
+            "each failure is logged exactly once: {:?}",
+            logs.lines()
+        );
     }
 }

@@ -71,6 +71,8 @@
   "supportedModels": "模型",
   "autoCheckUpdates": "自动检查更新",
   "autoCheckUpdatesDesc": "定期检查 GitHub 上是否有新版本",
+  "logLevel": "日志级别",
+  "logLevelDesc": "日志中显示的最低级别",
   "updatesSection": "更新",
   "updateCheckNow": "立即检查",
   "updateChecking": "正在检查...",

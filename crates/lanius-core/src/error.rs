@@ -131,6 +131,54 @@ impl GatewayError {
             other => other.to_string(),
         }
     }
+
+    /// Returns an operator-facing description of this error for logs. Unlike
+    /// [`Self::user_message`], this keeps diagnostic detail such as Kiro's
+    /// raw error message/reason and the transport error chain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::GatewayError;
+    ///
+    /// let err = GatewayError::Internal("boom".into());
+    /// assert_eq!(err.log_detail(), "internal error: boom");
+    /// ```
+    pub fn log_detail(&self) -> String {
+        match self {
+            Self::Upstream { status, info } => format!(
+                "upstream error {status} [{}]: {}",
+                info.reason, info.original_message
+            ),
+            Self::Network(info) => format!(
+                "network error [{}]: {} ({})",
+                info.category, info.user_message, info.technical_details
+            ),
+            other => other.to_string(),
+        }
+    }
+
+    /// Emits this error as a `tracing` event so it reaches every installed
+    /// log sink (terminal, GUI log view). Errors that map to a 5xx status
+    /// are logged at `ERROR`, everything else at `WARN`. `context`
+    /// describes the operation that failed (e.g. `"POST /v1/messages"`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::GatewayError;
+    ///
+    /// GatewayError::UnknownModel("gpt-5".into()).report("POST /v1/chat/completions");
+    /// ```
+    pub fn report(&self, context: &str) {
+        let status = self.http_status();
+        let detail = self.log_detail();
+        if status >= 500 {
+            tracing::error!(status, error = %detail, "{context} failed");
+        } else {
+            tracing::warn!(status, error = %detail, "{context} failed");
+        }
+    }
 }
 
 impl From<rusqlite::Error> for GatewayError {
@@ -764,6 +812,43 @@ mod tests {
         assert!(!is_unclean_tls_eof(
             "invalid peer certificate: unknownissuer"
         ));
+    }
+
+    #[test]
+    fn log_detail_keeps_diagnostics_hidden_from_users() {
+        let err = GatewayError::Upstream {
+            status: 400,
+            info: Box::new(enhance_kiro_error(&json!({
+                "message": "Improperly formed request.",
+            }))),
+        };
+        assert!(err.user_message().contains("debug logs"));
+        let detail = err.log_detail();
+        assert!(detail.contains("400"), "{detail}");
+        assert!(detail.contains("Improperly formed request."), "{detail}");
+    }
+
+    #[test]
+    fn report_logs_5xx_as_error_and_others_as_warn() {
+        let (logs, _guard) = crate::test_log::CapturedLogs::install();
+        GatewayError::Internal("boom".into()).report("POST /x");
+        GatewayError::UnknownModel("gpt-5".into()).report("POST /y");
+        assert!(
+            logs.has(
+                "ERROR",
+                &["POST /x failed", "status=500", "internal error: boom"]
+            ),
+            "{:?}",
+            logs.lines()
+        );
+        assert!(
+            logs.has(
+                "WARN",
+                &["POST /y failed", "status=400", "unknown model: gpt-5"]
+            ),
+            "{:?}",
+            logs.lines()
+        );
     }
 
     #[test]

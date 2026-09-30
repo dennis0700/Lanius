@@ -49,7 +49,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use slint::{ComponentHandle, SharedString, Timer, TimerMode};
-use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -102,18 +101,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let log_buffer = LogBuffer::new();
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer().with_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-            ),
-        )
-        .with(
-            CaptureLayer::new(log_buffer.clone()).with_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-            ),
-        )
+        .with(log_capture::reloadable_filter())
+        .with(tracing_subscriber::fmt::layer())
+        .with(CaptureLayer::new(log_buffer.clone()))
         .init();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

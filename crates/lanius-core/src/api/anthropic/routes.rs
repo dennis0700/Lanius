@@ -33,6 +33,7 @@ use super::models::{
 use super::sse::{
     AnthropicSseFormatter, DEFAULT_PING_INTERVAL, RequestTokenInput, response_from_stream_result,
 };
+use crate::api::ErrorDetail;
 use crate::auth::AuthManager;
 use crate::compat::ToolNameAliases;
 use crate::config::Config;
@@ -247,6 +248,7 @@ fn stream_response(
                         }
                     }
                     Some(Err(error)) => {
+                        error.report("POST /v1/messages stream");
                         for frame in formatter.error(&error.user_message()).unwrap_or_default() {
                             yield Ok(Bytes::from(frame));
                         }
@@ -358,7 +360,14 @@ async fn preflight_upstream(
                 }
             }
             Ok(None) => return Ok(source),
-            Err(_) if attempt + 1 < tries => continue,
+            Err(_) if attempt + 1 < tries => {
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    timeout = ?config.first_token_timeout,
+                    "first token timed out; retrying upstream request"
+                );
+                continue;
+            }
             Err(_) => return Err(GatewayError::FirstTokenTimeout(config.first_token_timeout)),
         }
     }
@@ -454,10 +463,13 @@ fn gateway_error_response(error: &GatewayError) -> Response {
     } else {
         "api_error"
     };
-    error_response(
-        StatusCode::from_u16(error.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-        kind,
-        &error.user_message(),
+    ErrorDetail::attach(
+        error_response(
+            StatusCode::from_u16(error.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            kind,
+            &error.user_message(),
+        ),
+        error.log_detail(),
     )
 }
 
@@ -754,6 +766,43 @@ mod tests {
         apply_truncation_recovery(&mut request, &state.truncation_store, &state.config);
         assert_eq!(request.messages.len(), 3);
         assert!(message_text(&request.messages[2]).contains("[System Notice]"));
+    }
+
+    #[tokio::test]
+    async fn mid_stream_failure_is_logged_and_sent_as_error_frame() {
+        let (logs, _guard) = crate::test_log::CapturedLogs::install();
+        let mut state = state();
+        state.config = Arc::new(Config {
+            first_token_timeout: std::time::Duration::from_millis(10),
+            ..(*state.config).clone()
+        });
+        let request: AnthropicMessagesRequest = serde_json::from_value(json!({
+            "model": "claude", "max_tokens": 1, "stream": true,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap_or_else(|error| panic!("fixture request must deserialize: {error}"));
+        let prepared = PreparedRequest {
+            source: stream::pending().boxed(),
+            tool_name_aliases: ToolNameAliases::default(),
+        };
+        let token_input = RequestTokenInput {
+            messages: vec![],
+            tools: None,
+            system: None,
+        };
+
+        let response = stream_response(state, request, token_input, "conv".into(), prepared);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap_or_else(|error| panic!("stream body must be readable: {error}"));
+        let text = String::from_utf8_lossy(&body);
+
+        assert!(text.contains("event: error"), "{text}");
+        assert!(
+            logs.has("ERROR", &["POST /v1/messages stream failed", "status=504"]),
+            "{:?}",
+            logs.lines()
+        );
     }
 }
 

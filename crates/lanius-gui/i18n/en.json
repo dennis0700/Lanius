@@ -71,6 +71,8 @@
   "supportedModels": "Models",
   "autoCheckUpdates": "Check for Updates Automatically",
   "autoCheckUpdatesDesc": "Periodically check GitHub for a newer version",
+  "logLevel": "Log Level",
+  "logLevelDesc": "Minimum severity shown in the log view",
   "updatesSection": "Updates",
   "updateCheckNow": "Check Now",
   "updateChecking": "Checking...",

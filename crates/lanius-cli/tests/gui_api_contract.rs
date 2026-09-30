@@ -22,7 +22,7 @@ fn build_config_like_desktop_app() -> Config {
 
     let mut cfg = Config {
         server_host: "127.0.0.1".to_string(),
-        server_port: 8000,
+        server_port: 18000,
         proxy_api_key: "desktop-key".to_string(),
         region: "us-east-1".to_string(),
         vpn_proxy_url: None,
@@ -49,7 +49,7 @@ fn build_config_like_desktop_app() -> Config {
 fn desktop_config_mapping_type_checks_and_validates() {
     let cfg = build_config_like_desktop_app();
     cfg.validate().expect("mapped config must validate");
-    assert_eq!(cfg.server_port, 8000);
+    assert_eq!(cfg.server_port, 18000);
     assert_eq!(cfg.api_host(), "https://runtime.us-east-1.kiro.dev");
     assert!(cfg.sqlite_readonly);
     assert!(cfg.debug_dir.is_absolute());

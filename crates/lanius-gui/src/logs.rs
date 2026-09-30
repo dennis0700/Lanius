@@ -176,6 +176,31 @@ pub fn process(lines: &[String]) -> Vec<ProcessedLog> {
         .collect()
 }
 
+/// Joins processed rows into the single selectable text block shown in the
+/// log view, one line per row with the `HH:MM:SS` time (when present) as a
+/// prefix.
+///
+/// # Examples
+///
+/// ```ignore
+/// let rows = crate::logs::process(&["2026-02-10 18:11:11 | ready".to_string()]);
+/// assert_eq!(crate::logs::display_text(&rows), "18:11:11  ready");
+/// ```
+pub fn display_text(processed: &[ProcessedLog]) -> String {
+    let mut out = String::new();
+    for (i, row) in processed.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if !row.time.is_empty() {
+            out.push_str(&row.time);
+            out.push_str("  ");
+        }
+        out.push_str(&row.text);
+    }
+    out
+}
+
 /// Renders the full (unfiltered, unbounded-by-`MAX_VISIBLE_LOGS`) log buffer
 /// as plain text for the "export logs" feature, stripping ANSI codes but
 /// leaving timestamps in place (unlike [`process`], which splits them into a
@@ -258,6 +283,16 @@ mod tests {
             processed.last().unwrap().text,
             format!("line {}", MAX_VISIBLE_LOGS + 24)
         );
+    }
+
+    #[test]
+    fn display_text_prefixes_time_and_joins_lines() {
+        let rows = process(&[
+            "2026-02-10 18:11:11 | ready".to_string(),
+            "plain".to_string(),
+        ]);
+        assert_eq!(display_text(&rows), "18:11:11  ready\nplain");
+        assert_eq!(display_text(&[]), "");
     }
 
     #[test]
