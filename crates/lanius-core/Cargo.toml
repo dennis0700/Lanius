@@ -1,6 +1,6 @@
 [package]
 name = "lanius-core"
-version = "0.1.5"
+version = "0.1.6"
 description = "OpenAI- and Anthropic-compatible bridge for the Kiro (AWS CodeWhisperer) API"
 license = "AGPL-3.0"
 edition = "2024"
