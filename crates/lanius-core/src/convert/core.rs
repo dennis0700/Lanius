@@ -19,6 +19,7 @@ use super::guards::{check_payload_size, trim_payload_to_limit};
 use crate::{
     config::Config,
     error::{GatewayError, Result},
+    utils::{KIRO_ORIGIN, kiro_os},
 };
 
 /// Placeholder text substituted for a message whose content would otherwise be empty.
@@ -612,7 +613,9 @@ pub fn build_kiro_history(messages: &[UnifiedMessage], model_id: &str) -> Result
     messages
         .iter()
         .map(|message| match message.role.as_str() {
-            "user" => Ok(json!({"userInputMessage": build_user(message, model_id, Vec::new())})),
+            "user" => {
+                Ok(json!({"userInputMessage": build_user(message, model_id, Vec::new(), false)}))
+            }
             "assistant" => Ok(json!({"assistantResponseMessage": build_assistant(message)?})),
             _ => Err(GatewayError::Internal(
                 "history received unnormalized role".to_owned(),
@@ -763,7 +766,7 @@ pub fn build_kiro_payload(
     let kiro_tools = convert_tools_to_kiro_format(processed_tools.as_deref());
     let mut current_message = current;
     current_message.content = Value::String(current_content);
-    let current_user = build_user(&current_message, model_id, kiro_tools);
+    let current_user = build_user(&current_message, model_id, kiro_tools, true);
     let mut state = Map::new();
     state.insert(
         "chatTriggerType".to_owned(),
@@ -777,6 +780,7 @@ pub fn build_kiro_payload(
         "currentMessage".to_owned(),
         json!({"userInputMessage":current_user}),
     );
+    state.insert("agentTaskType".to_owned(), Value::String("vibe".to_owned()));
     if !history.is_empty() {
         state.insert("history".to_owned(), Value::Array(history));
     }
@@ -860,14 +864,14 @@ fn preprocess_tool_context(messages: Vec<UnifiedMessage>, has_tools: bool) -> Ve
 /// current turn ever carries a `tools` list in `userInputMessageContext`, since Kiro
 /// expects tool declarations attached once per request rather than repeated in every
 /// history entry.
-fn build_user(message: &UnifiedMessage, model_id: &str, tools: Vec<Value>) -> Value {
+fn build_user(message: &UnifiedMessage, model_id: &str, tools: Vec<Value>, current: bool) -> Value {
     let mut user = Map::new();
     user.insert(
         "content".to_owned(),
         Value::String(nonempty(&extract_text_content(&message.content))),
     );
     user.insert("modelId".to_owned(), Value::String(model_id.to_owned()));
-    user.insert("origin".to_owned(), Value::String("AI_EDITOR".to_owned()));
+    user.insert("origin".to_owned(), Value::String(KIRO_ORIGIN.to_owned()));
     let extracted;
     let images: &[UnifiedImage] = if message.images.is_empty() {
         extracted = extract_images_from_content(&message.content);
@@ -881,6 +885,21 @@ fn build_user(message: &UnifiedMessage, model_id: &str, tools: Vec<Value>) -> Va
     }
     let results = convert_tool_results_to_kiro_format(&message.tool_results);
     let mut context = Map::new();
+    if current {
+        // The Kiro CLI attaches its environment to the current turn only.
+        let mut env = Map::new();
+        env.insert(
+            "operatingSystem".to_owned(),
+            Value::String(kiro_os().to_owned()),
+        );
+        if let Ok(cwd) = std::env::current_dir() {
+            env.insert(
+                "currentWorkingDirectory".to_owned(),
+                Value::String(cwd.to_string_lossy().into_owned()),
+            );
+        }
+        context.insert("envState".to_owned(), Value::Object(env));
+    }
     if !tools.is_empty() {
         context.insert("tools".to_owned(), Value::Array(tools));
     }

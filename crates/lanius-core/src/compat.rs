@@ -42,6 +42,7 @@
 //! accurately reports which compatibility behaviors are active.
 
 use crate::error::Result;
+use crate::utils::{API_RUNTIME, kiro_amz_user_agent, kiro_user_agent};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -799,8 +800,7 @@ impl ProfileArnAutofetchHook {
         format!("https://q.{region}.amazonaws.com/")
     }
     /// Builds the header set for a `ListAvailableProfiles` request: bearer auth using
-    /// `token`, and the AWS SDK-style target/user-agent headers (including `fingerprint`,
-    /// the per-machine identifier) that the control plane expects.
+    /// `token`, the AWS SDK-style target, and the Kiro CLI runtime-API user-agents.
     ///
     /// Callers must treat `token` as sensitive: it is embedded verbatim in the
     /// `Authorization` header value returned here.
@@ -811,10 +811,10 @@ impl ProfileArnAutofetchHook {
     /// use lanius_core::compat::ProfileArnAutofetchHook;
     /// use axum::http::header;
     ///
-    /// let headers = ProfileArnAutofetchHook::profile_headers("tok", "fp");
+    /// let headers = ProfileArnAutofetchHook::profile_headers("tok");
     /// assert_eq!(headers[header::AUTHORIZATION], "Bearer tok");
     /// ```
-    pub fn profile_headers(token: &str, fingerprint: &str) -> HeaderMap {
+    pub fn profile_headers(token: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         let entries = [
             (header::AUTHORIZATION, format!("Bearer {token}")),
@@ -830,13 +830,14 @@ impl ProfileArnAutofetchHook {
                 HeaderName::from_static("x-amz-target"),
                 "AmazonCodeWhispererService.ListAvailableProfiles".to_string(),
             ),
-            (
-                header::USER_AGENT,
-                format!("aws-sdk-js/1.0.27 KiroIDE-0.7.45-{fingerprint}"),
-            ),
+            (header::USER_AGENT, kiro_user_agent(API_RUNTIME)),
             (
                 HeaderName::from_static("x-amz-user-agent"),
-                format!("aws-sdk-js/1.0.27 KiroIDE-0.7.45-{fingerprint}"),
+                kiro_amz_user_agent(API_RUNTIME),
+            ),
+            (
+                HeaderName::from_static("x-amzn-codewhisperer-optout"),
+                "false".to_string(),
             ),
         ];
         for (name, value) in entries {
@@ -1109,7 +1110,7 @@ mod tests {
             ProfileArnAutofetchHook::profile_url("eu-west-1"),
             "https://q.eu-west-1.amazonaws.com/"
         );
-        let headers = ProfileArnAutofetchHook::profile_headers("secret", "fp");
+        let headers = ProfileArnAutofetchHook::profile_headers("secret");
         assert_eq!(
             headers["x-amz-target"],
             "AmazonCodeWhispererService.ListAvailableProfiles"

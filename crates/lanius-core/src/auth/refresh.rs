@@ -24,6 +24,7 @@ use reqwest::StatusCode;
 use serde_json::{Value, json};
 
 use crate::error::{GatewayError, Result};
+use crate::utils::{API_SSO_OIDC, KIRO_CLI_REFRESH_USER_AGENT, aws_sdk_user_agents};
 
 use super::AuthType;
 use super::credentials::Credentials;
@@ -82,6 +83,26 @@ pub(crate) fn oidc_body(client_id: &str, client_secret: &str, refresh_token: &st
     })
 }
 
+/// Headers for the Kiro social-login refresh endpoint, as sent by the Kiro CLI.
+fn desktop_headers() -> Vec<(&'static str, String)> {
+    vec![
+        ("Content-Type", "application/json".to_string()),
+        ("Accept", "*/*".to_string()),
+        ("User-Agent", KIRO_CLI_REFRESH_USER_AGENT.to_string()),
+    ]
+}
+
+/// Headers for the AWS SSO OIDC token endpoint, as sent by the Kiro CLI's
+/// SSO OIDC SDK client.
+fn oidc_headers() -> Vec<(&'static str, String)> {
+    let (user_agent, amz_user_agent) = aws_sdk_user_agents(API_SSO_OIDC);
+    vec![
+        ("Content-Type", "application/json".to_string()),
+        ("User-Agent", user_agent),
+        ("x-amz-user-agent", amz_user_agent),
+    ]
+}
+
 /// Performs one refresh HTTP request for the given `auth_type`, using the credentials'
 /// current refresh token (and, for OIDC, client id/secret). Always performs exactly one
 /// network request when it reaches the point of sending; returns before sending if a
@@ -98,16 +119,12 @@ pub(crate) async fn refresh(
     auth_type: AuthType,
     credentials: &Credentials,
     endpoints: &RefreshEndpoints,
-    fingerprint: &str,
 ) -> std::result::Result<RefreshOutcome, RefreshError> {
     let refresh_token = required(&credentials.refresh_token, "Refresh token is not set")?;
     let (url, headers, payload, profile_arn) = match auth_type {
         AuthType::KiroDesktop => (
             &endpoints.desktop_url,
-            vec![
-                ("Content-Type", "application/json".to_string()),
-                ("User-Agent", format!("KiroIDE-0.7.45-{fingerprint}")),
-            ],
+            desktop_headers(),
             desktop_body(refresh_token),
             true,
         ),
@@ -122,7 +139,7 @@ pub(crate) async fn refresh(
             )?;
             (
                 &endpoints.oidc_url,
-                vec![("Content-Type", "application/json".to_string())],
+                oidc_headers(),
                 oidc_body(client_id, client_secret, refresh_token),
                 false,
             )
@@ -274,6 +291,22 @@ mod tests {
             error.user_message(),
             "authentication failed: AWS SSO OIDC response does not contain accessToken"
         );
+    }
+
+    #[test]
+    fn refresh_headers_identify_as_kiro_cli() {
+        let desktop = desktop_headers();
+        assert!(desktop.contains(&("User-Agent", "Kiro-CLI".to_string())));
+        let oidc = oidc_headers();
+        let amz = &oidc
+            .iter()
+            .find(|(name, _)| *name == "x-amz-user-agent")
+            .unwrap()
+            .1;
+        assert!(amz.contains("api/ssooidc/") && amz.ends_with("app/AmazonQ-For-CLI"));
+        for (_, value) in desktop.iter().chain(&oidc) {
+            assert!(!value.contains("KiroIDE"));
+        }
     }
 
     #[test]

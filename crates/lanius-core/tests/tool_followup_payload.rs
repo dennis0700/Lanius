@@ -109,3 +109,27 @@ fn tool_result_is_paired_to_the_clients_tool_use_id() {
         "the tool output must reach the upstream intact"
     );
 }
+
+#[test]
+fn payload_identifies_as_kiro_cli() {
+    let (payload, _) = build();
+    let state = &payload["conversationState"];
+    assert_eq!(state["agentTaskType"], "vibe");
+
+    let current = &state["currentMessage"]["userInputMessage"];
+    assert_eq!(current["origin"], "KIRO_CLI");
+    let env = &current["userInputMessageContext"]["envState"];
+    assert_eq!(env["operatingSystem"], std::env::consts::OS);
+    assert!(env["currentWorkingDirectory"].is_string());
+
+    for entry in state["history"].as_array().expect("history array") {
+        if let Some(user) = entry.get("userInputMessage") {
+            assert_eq!(user["origin"], "KIRO_CLI");
+            assert!(
+                user.pointer("/userInputMessageContext/envState").is_none(),
+                "only the current turn carries envState"
+            );
+        }
+    }
+    assert!(!payload.to_string().contains("AI_EDITOR"));
+}

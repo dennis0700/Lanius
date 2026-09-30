@@ -286,7 +286,7 @@ async fn probe(config: Config, prompt: String, capture: Option<PathBuf>) -> Resu
             "userInputMessage": {
                 "content": prompt,
                 "modelId": "auto",
-                "origin": "AI_EDITOR",
+                "origin": lanius_core::utils::KIRO_ORIGIN,
             }
         },
         "history": [],

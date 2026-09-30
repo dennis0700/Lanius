@@ -306,7 +306,7 @@ impl AuthManager {
                 .unwrap_or_else(|| state.region.clone())
         };
         let body = br#"{"nextToken": null}"#.to_vec();
-        let headers = ProfileArnAutofetchHook::profile_headers(token, &self.fingerprint);
+        let headers = ProfileArnAutofetchHook::profile_headers(token);
         let url = ProfileArnAutofetchHook::profile_url(&region);
         let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
         if let Some(proxy_url) = self
@@ -486,13 +486,7 @@ impl AuthManager {
         state: &mut TokenState,
     ) -> std::result::Result<String, RefreshError> {
         let endpoints = self.endpoints(state);
-        let first = refresh::refresh(
-            state.auth_type,
-            &state.credentials,
-            &endpoints,
-            &self.fingerprint,
-        )
-        .await;
+        let first = refresh::refresh(state.auth_type, &state.credentials, &endpoints).await;
 
         let outcome = match first {
             Err(RefreshError::HttpStatus(status))
@@ -504,13 +498,7 @@ impl AuthManager {
             {
                 self.reload_sqlite(state).map_err(RefreshError::Gateway)?;
                 let retry_endpoints = self.endpoints(state);
-                refresh::refresh(
-                    state.auth_type,
-                    &state.credentials,
-                    &retry_endpoints,
-                    &self.fingerprint,
-                )
-                .await?
+                refresh::refresh(state.auth_type, &state.credentials, &retry_endpoints).await?
             }
             Err(error) => return Err(error),
             Ok(outcome) => outcome,
@@ -1052,8 +1040,7 @@ mod tests {
             "https://q.us-east-1.amazonaws.com/"
         );
 
-        let headers =
-            ProfileArnAutofetchHook::profile_headers("access-token", "fixture-fingerprint");
+        let headers = ProfileArnAutofetchHook::profile_headers("access-token");
         assert_eq!(
             headers[reqwest::header::AUTHORIZATION],
             "Bearer access-token"
@@ -1064,7 +1051,7 @@ mod tests {
         );
         assert_eq!(
             headers[reqwest::header::USER_AGENT],
-            "aws-sdk-js/1.0.27 KiroIDE-0.7.45-fixture-fingerprint"
+            crate::utils::kiro_user_agent(crate::utils::API_RUNTIME)
         );
 
         assert_eq!(

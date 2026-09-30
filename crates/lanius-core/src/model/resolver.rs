@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use super::cache::ModelInfoCache;
 use super::reasoning::returns_visible_thinking;
-use crate::auth::{AuthManager, AuthType};
+use crate::auth::AuthManager;
 use crate::config::{Config, default_hidden_from_list, default_model_aliases};
 use crate::upstream::KiroHttpClient;
 
@@ -379,18 +379,21 @@ pub fn to_runtime_model_id(normalized: &str) -> String {
 /// ```
 pub async fn fetch_available_models(auth: Arc<AuthManager>, config: &Config) -> Option<Vec<Value>> {
     let mut payload = serde_json::Map::new();
-    payload.insert("origin".to_owned(), Value::String("AI_EDITOR".to_owned()));
-    if auth.auth_type().await == AuthType::KiroDesktop {
-        if let Some(profile_arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
-            payload.insert("profileArn".to_owned(), Value::String(profile_arn));
-        }
+    payload.insert(
+        "origin".to_owned(),
+        Value::String(crate::utils::KIRO_ORIGIN.to_owned()),
+    );
+    // Kiro CLI traffic is served by the Kiro control plane, which rejects
+    // requests without a profile ARN whenever one exists for the account.
+    if let Some(profile_arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
+        payload.insert("profileArn".to_owned(), Value::String(profile_arn));
     }
     let body = serde_json::to_vec(&Value::Object(payload)).ok()?;
 
     let token = auth.access_token().await.ok()?;
     let client = KiroHttpClient::new(auth.clone(), config).ok()?;
     let mut headers = reqwest::header::HeaderMap::new();
-    for (name, value) in crate::utils::kiro_headers(&token) {
+    for (name, value) in crate::utils::kiro_headers_for(&token, crate::utils::API_RUNTIME) {
         if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
             headers.insert(name, value);
         }

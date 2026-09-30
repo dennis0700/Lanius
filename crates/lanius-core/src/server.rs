@@ -37,7 +37,7 @@ use crate::error::{GatewayError, Result};
 use crate::model::{ModelInfoCache, ModelResolver};
 use crate::truncation::TruncationStore;
 use crate::upstream::KiroHttpClient;
-use crate::utils::kiro_headers;
+use crate::utils::{API_RUNTIME, KIRO_ORIGIN, kiro_headers_for};
 
 /// Shared application state handed to every route handler via `axum`'s
 /// `State` extractor. Cloning is cheap: every field is an `Arc`, so all
@@ -260,10 +260,15 @@ async fn fetch_usage(state: &AppState) -> std::result::Result<Value, Box<Respons
         .access_token_and_autofetch()
         .await
         .map_err(|error| Box::new(gateway_response(&error, "Failed to fetch usage")))?;
-    let body = serde_json::to_vec(&json!({"origin":"AI_EDITOR","isEmailRequired":true}))
+    let mut payload = json!({"origin":KIRO_ORIGIN,"isEmailRequired":true});
+    // The Kiro control plane requires the profile ARN for CLI-identified requests.
+    if let Some(profile_arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
+        payload["profileArn"] = Value::String(profile_arn);
+    }
+    let body = serde_json::to_vec(&payload)
         .map_err(|error| Box::new(gateway_response(&error.into(), "Failed to fetch usage")))?;
     let mut headers = reqwest::header::HeaderMap::new();
-    for (name, value) in kiro_headers(&token) {
+    for (name, value) in kiro_headers_for(&token, API_RUNTIME) {
         if let Ok(value) = HeaderValue::from_str(&value) {
             headers.insert(name, value);
         }
