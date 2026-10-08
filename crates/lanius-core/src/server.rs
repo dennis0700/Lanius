@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -154,7 +154,20 @@ fn app(state: AppState) -> Router {
         // tower-http's own 5xx ERROR line so each failure is logged once.
         .layer(TraceLayer::new_for_http().on_failure(()))
         .layer(CatchPanicLayer::new())
+        // Axum's extractor default (2 MiB) is too small for requests with
+        // inline image/file attachments; raise it well above
+        // `kiro_max_payload_bytes` so oversized requests are rejected by our
+        // own trimming/error logic instead of failing before `Json<T>` runs.
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
 }
+
+// Upper bound for the raw HTTP request body accepted by `Json<T>`
+// extractors across all routes. Deliberately larger than
+// `Config::kiro_max_payload_bytes` (the Kiro upstream payload limit) so that
+// large-but-legitimate requests (e.g. inline images) reach the business
+// logic, where `AUTO_TRIM_PAYLOAD`/explicit size checks can trim or reject
+// them with a proper error instead of axum rejecting the connection first.
+const MAX_REQUEST_BODY_BYTES: usize = 50 * 1024 * 1024;
 
 // Logs every non-success response with its method, path, status, latency
 // and (when a handler attached one) the operator-facing `ErrorDetail`, so
@@ -968,6 +981,73 @@ mod tests {
             model_resolver,
             truncation_store: Arc::new(TruncationStore::default()),
         })
+    }
+
+    // Builds a `/v1/messages` request whose body is `image_bytes` of base64
+    // image data embedded in an otherwise-valid Anthropic request, with the
+    // shared `test-key` bearer auth already attached.
+    fn image_request(image_bytes: usize) -> (Request<Body>, usize) {
+        let payload = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": "A".repeat(image_bytes)}
+                }]
+            }]
+        });
+        let body = serde_json::to_vec(&payload)
+            .unwrap_or_else(|error| panic!("payload must serialize: {error}"));
+        let len = body.len();
+        let mut request = request(Method::POST, "/v1/messages", Body::from(body));
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer test-key"),
+        );
+        (request, len)
+    }
+
+    #[tokio::test]
+    async fn body_above_axums_old_2mib_default_but_within_our_limit_is_not_rejected() {
+        // 10 MiB of base64 image data: well past axum's old 2 MiB default,
+        // comfortably under our configured MAX_REQUEST_BODY_BYTES (50 MiB).
+        let (request, len) = image_request(10 * 1024 * 1024);
+        assert!(len > 2 * 1024 * 1024);
+
+        let response = test_app()
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|never| match never {});
+
+        // Whatever the handler does next (upstream call, payload trimming,
+        // etc.) is out of scope; this only proves the body-limit layer lets
+        // it through instead of rejecting at the HTTP boundary.
+        assert_ne!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "a 10 MiB request must pass axum's body-limit layer under the raised 50 MiB cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn body_above_our_configured_cap_is_still_rejected() {
+        // 60 MiB exceeds MAX_REQUEST_BODY_BYTES (50 MiB) itself, so this
+        // must still be rejected -- the cap is a real limit, not infinite.
+        let (request, len) = image_request(60 * 1024 * 1024);
+        assert!(len > MAX_REQUEST_BODY_BYTES);
+
+        let response = test_app()
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|never| match never {});
+
+        assert_eq!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "a 60 MiB request exceeds the configured 50 MiB cap and must be rejected"
+        );
     }
 
     #[tokio::test]
