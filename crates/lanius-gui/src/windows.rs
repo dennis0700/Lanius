@@ -51,6 +51,9 @@ unsafe impl Send for InstanceGuard {}
 impl Drop for InstanceGuard {
     fn drop(&mut self) {
         if !self.mutex.is_null() {
+            // SAFETY: `mutex` is a `HANDLE` returned by `CreateMutexW` in
+            // `acquire_single_instance` and is only ever closed here, once,
+            // on drop — never shared, duplicated, or closed elsewhere.
             unsafe { CloseHandle(self.mutex) };
         }
     }
@@ -75,7 +78,15 @@ impl Drop for InstanceGuard {
 /// ```
 pub fn acquire_single_instance() -> Option<InstanceGuard> {
     let name = wide(MUTEX_NAME);
+    // SAFETY: `name` is a NUL-terminated UTF-16 buffer owned by this
+    // function and kept alive for the duration of the call; the other two
+    // arguments are plain values with no pointer/lifetime requirements.
+    // `CreateMutexW` returns either a valid handle or null on failure, both
+    // of which are checked below.
     let mutex = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    // SAFETY: `GetLastError` takes no arguments and is always safe to call;
+    // it must be read immediately after `CreateMutexW` (before any other
+    // Win32 call that could overwrite the per-thread last-error value).
     let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
 
     if mutex.is_null() {
@@ -86,6 +97,8 @@ pub fn acquire_single_instance() -> Option<InstanceGuard> {
     }
 
     if already_running {
+        // SAFETY: `mutex` was just returned by `CreateMutexW` above, is
+        // confirmed non-null, and is not used again after this point.
         unsafe { CloseHandle(mutex) };
         signal_existing_instance();
         return None;
@@ -98,10 +111,16 @@ pub fn acquire_single_instance() -> Option<InstanceGuard> {
 /// auto-reset event created by [`listen_for_activation`].
 fn signal_existing_instance() {
     let name = wide(ACTIVATE_EVENT_NAME);
+    // SAFETY: `name` is a NUL-terminated UTF-16 buffer owned by this
+    // function and kept alive for the duration of the call; `OpenEventW`
+    // returns either a valid handle or null on failure, checked below.
     let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
     if event.is_null() {
         return;
     }
+    // SAFETY: `event` was just returned by `OpenEventW` above and confirmed
+    // non-null; both calls operate on that same handle and `CloseHandle` is
+    // the last use of it.
     unsafe {
         SetEvent(event);
         CloseHandle(event);
@@ -121,7 +140,10 @@ fn signal_existing_instance() {
 /// ```
 pub fn listen_for_activation(on_activate: impl Fn() + Send + 'static) {
     let name = wide(ACTIVATE_EVENT_NAME);
-    // Auto-reset (bManualReset = FALSE), initially non-signalled.
+    // SAFETY: `name` is a NUL-terminated UTF-16 buffer owned by this
+    // function and kept alive for the duration of the call (auto-reset:
+    // `bManualReset = FALSE`, initially non-signalled). `CreateEventW`
+    // returns either a valid handle or null on failure, checked below.
     let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
     if event.is_null() {
         tracing::warn!("activation event unavailable; a second launch won't refocus this window");
@@ -134,6 +156,10 @@ pub fn listen_for_activation(on_activate: impl Fn() + Send + 'static) {
         .spawn(move || {
             let event = event as HANDLE;
             loop {
+                // SAFETY: `event` was returned by `CreateEventW` above and
+                // confirmed non-null before being moved into this thread;
+                // the handle is never closed, so it remains valid for every
+                // iteration of this loop for the lifetime of the thread.
                 if unsafe { WaitForSingleObject(event, INFINITE) } != 0 {
                     // WAIT_FAILED/WAIT_ABANDONED: stop rather than spin.
                     break;
@@ -158,6 +184,9 @@ pub fn listen_for_activation(on_activate: impl Fn() + Send + 'static) {
 pub fn user_locale() -> Option<String> {
     // LOCALE_NAME_MAX_LENGTH is 85 (including the terminating NUL).
     let mut buf = [0u16; 85];
+    // SAFETY: `buf` is a stack buffer of 85 `u16`s and its length (in
+    // elements, matching what `GetUserDefaultLocaleName` expects) is passed
+    // alongside the pointer, so the call cannot write past the buffer.
     let len = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
     if len <= 1 {
         return None;
@@ -184,6 +213,11 @@ pub fn open_url(url: &str) -> Result<(), String> {
     }
     let verb = wide("open");
     let file = wide(url);
+    // SAFETY: `verb`/`file` are NUL-terminated UTF-16 buffers owned by this
+    // function and kept alive for the duration of the call; the remaining
+    // arguments are either null (no parent window/parameters/directory,
+    // all explicitly allowed by this API) or a plain value, with no
+    // pointer/lifetime requirements of their own.
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),

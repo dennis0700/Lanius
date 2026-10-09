@@ -55,7 +55,7 @@ use crate::utils::{HashableMessage, generate_conversation_id};
 #[derive(Clone)]
 pub struct OpenAiState {
     /// Effective gateway configuration.
-    pub config: Config,
+    pub config: Arc<Config>,
     /// Handles token acquisition/refresh against Kiro/AWS.
     pub auth_manager: Arc<AuthManager>,
     /// Cached model catalog (ids, context limits, reasoning capabilities).
@@ -81,9 +81,9 @@ impl OpenAiState {
     ///
     /// let config = Config::default();
     /// let auth = Arc::new(AuthManager::new(config.clone()).expect("valid config"));
-    /// let _state = OpenAiState::new(config, auth);
+    /// let _state = OpenAiState::new(Arc::new(config), auth);
     /// ```
-    pub fn new(config: Config, auth_manager: Arc<AuthManager>) -> Self {
+    pub fn new(config: Arc<Config>, auth_manager: Arc<AuthManager>) -> Self {
         let cache = Arc::new(ModelInfoCache::default());
         Self {
             model_resolver: ModelResolver::from_config((*cache).clone(), &config),
@@ -720,7 +720,7 @@ mod tests {
             model_cache: Arc::new(cache.clone()),
             model_resolver: ModelResolver::from_config(cache, &config),
             truncation_store: TruncationStore::default(),
-            config,
+            config: Arc::new(config),
         };
         let ids = state.model_resolver.get_available_models();
         assert!(!ids.contains(&"hidden".to_string()));

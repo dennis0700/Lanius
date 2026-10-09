@@ -13,7 +13,9 @@
 //! It is regenerated/extended whenever a new translatable string is added to
 //! the Slint UI and the `i18n/en.json` / `i18n/zh.json` tables — every
 //! `tr.set_*` call here must have a matching property on `Tr` and a matching
-//! key in every language table (enforced by a test in `i18n.rs`). Call sites
+//! key in every language table (the "every lookup key exists in English"
+//! half is enforced by a test in this module; i18n.rs separately enforces
+//! that every language table carries the full English key set). Call sites
 //! ([`crate::controller::Controller::refresh_translations`]) invoke
 //! [`apply`] once per language change, passing a closure that performs the
 //! actual key -> string lookup (with English fallback).
@@ -124,4 +126,48 @@ pub fn apply(tr: &Tr, lookup: impl Fn(&str) -> SharedString) {
     tr.set_update_failed(lookup("updateFailed"));
     tr.set_update_view_release(lookup("updateViewRelease"));
     tr.set_update_current_version(lookup("updateCurrentVersion"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MainWindow;
+    use crate::i18n::Translations;
+    use slint::ComponentHandle;
+    use std::cell::RefCell;
+
+    /// Every JSON key passed to `lookup` by [`apply`] must actually exist in
+    /// the English translation table, so the "every `tr.set_*` call here has
+    /// a matching key in every language table" claim in this module's docs
+    /// is enforced rather than merely asserted. (The reverse direction —
+    /// every English key being consumed by some `tr.set_*` call — isn't
+    /// checked here, since a handful of JSON keys are formatted via
+    /// `Translations::format` at call sites instead of flowing through
+    /// `apply`.)
+    #[test]
+    fn every_lookup_key_exists_in_the_english_table() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().expect("window must be constructible");
+
+        let translations = Translations::load();
+        let english = translations.snapshot();
+        let seen_keys = RefCell::new(Vec::new());
+
+        apply(&ui.global::<Tr>(), |key| {
+            seen_keys.borrow_mut().push(key.to_string());
+            SharedString::default()
+        });
+
+        let seen_keys = seen_keys.into_inner();
+        assert!(
+            !seen_keys.is_empty(),
+            "apply() must call lookup at least once"
+        );
+        for key in &seen_keys {
+            assert!(
+                english.contains_key(key),
+                "apply() looked up {key:?}, which has no entry in i18n/en.json"
+            );
+        }
+    }
 }

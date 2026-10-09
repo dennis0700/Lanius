@@ -48,7 +48,7 @@ mod windows;
 use std::sync::Arc;
 use std::time::Duration;
 
-use slint::{ComponentHandle, SharedString, Timer, TimerMode};
+use slint::{ComponentHandle, Timer, TimerMode};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -511,5 +511,3 @@ fn unix_seconds() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or_default()
 }
-
-const _: Option<SharedString> = None;

@@ -13,6 +13,7 @@
 //! frame strings, since OpenAI's chunk format needs less
 //! block-open/close bookkeeping than Anthropic's indexed content blocks.
 
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_stream::try_stream;
@@ -52,7 +53,7 @@ pub struct OpenAiFormatContext {
     /// estimation.
     pub request_tools: Option<Vec<Value>>,
     /// Effective gateway configuration.
-    pub config: Config,
+    pub config: Arc<Config>,
     /// Conversation id used as the truncation-store key.
     pub conversation_id: String,
     /// Recovery records for upstream tool-call/content truncation.
@@ -73,13 +74,14 @@ impl OpenAiFormatContext {
     /// use lanius_core::model::ModelInfoCache;
     /// use lanius_core::truncation::TruncationStore;
     /// use lanius_core::Config;
+    /// use std::sync::Arc;
     ///
     /// let context = OpenAiFormatContext::new(
     ///     "claude-sonnet-4.5",
     ///     ModelInfoCache::default(),
     ///     vec![],
     ///     None,
-    ///     Config::default(),
+    ///     Arc::new(Config::default()),
     ///     "conv-1",
     ///     TruncationStore::default(),
     /// );
@@ -90,7 +92,7 @@ impl OpenAiFormatContext {
         model_cache: ModelInfoCache,
         request_messages: Vec<Value>,
         request_tools: Option<Vec<Value>>,
-        config: Config,
+        config: Arc<Config>,
         conversation_id: impl Into<String>,
         truncation_store: TruncationStore,
     ) -> Self {
@@ -118,10 +120,11 @@ impl OpenAiFormatContext {
     /// use lanius_core::model::ModelInfoCache;
     /// use lanius_core::truncation::TruncationStore;
     /// use lanius_core::Config;
+    /// use std::sync::Arc;
     ///
     /// let context = OpenAiFormatContext::new(
     ///     "claude-sonnet-4.5", ModelInfoCache::default(), vec![], None,
-    ///     Config::default(), "conv-1", TruncationStore::default(),
+    ///     Arc::new(Config::default()), "conv-1", TruncationStore::default(),
     /// ).with_tool_name_aliases(ToolNameAliases::default());
     /// ```
     pub fn with_tool_name_aliases(mut self, aliases: ToolNameAliases) -> Self {
@@ -154,11 +157,12 @@ impl OpenAiFormatContext {
 /// use lanius_core::upstream::KiroEvent;
 /// use lanius_core::Config;
 /// use futures_util::StreamExt;
+/// use std::sync::Arc;
 ///
 /// # async fn example() {
 /// let context = OpenAiFormatContext::new(
 ///     "claude-sonnet-4.5", ModelInfoCache::default(), vec![], None,
-///     Config::default(), "conv-1", TruncationStore::default(),
+///     Arc::new(Config::default()), "conv-1", TruncationStore::default(),
 /// );
 /// let events = futures_util::stream::iter(vec![Ok(KiroEvent::content("hi"))]);
 /// let frames: Vec<_> = encode_openai_sse(events, context).collect().await;
@@ -336,11 +340,12 @@ where
 /// use lanius_core::model::ModelInfoCache;
 /// use lanius_core::truncation::TruncationStore;
 /// use lanius_core::Config;
+/// use std::sync::Arc;
 ///
 /// # async fn example() {
 /// let context = OpenAiFormatContext::new(
 ///     "claude-sonnet-4.5", ModelInfoCache::default(), vec![], None,
-///     Config::default(), "conv-1", TruncationStore::default(),
+///     Arc::new(Config::default()), "conv-1", TruncationStore::default(),
 /// );
 /// let chunks = vec![Ok(bytes::Bytes::from(r#"{"content":"hi"}"#))];
 /// let stream = futures_util::stream::iter(chunks);
@@ -629,7 +634,7 @@ mod tests {
         cache.update(vec![
             json!({"modelId":"m", "tokenLimits":{"maxInputTokens":1000}}),
         ]);
-        let config = Config::default();
+        let config = Arc::new(Config::default());
         OpenAiFormatContext::new(
             "m",
             cache,

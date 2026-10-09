@@ -113,7 +113,7 @@ impl AppState {
     // Builds the per-provider state slice for the OpenAI-compatible routes.
     fn openai_state(&self) -> OpenAiState {
         OpenAiState {
-            config: (*self.config).clone(),
+            config: self.config.clone(),
             auth_manager: self.auth_manager.clone(),
             model_cache: self.model_cache.clone(),
             model_resolver: (*self.model_resolver).clone(),
