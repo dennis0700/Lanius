@@ -15,6 +15,12 @@
 //! - `probe [prompt] [--capture <file>]` — perform a live end-to-end request
 //!   against the real Kiro backend (see [`probe`]), optionally writing the raw
 //!   response bytes to disk so they can later be fed back into `replay`.
+//! - `usage [--json]` — fetch the configured account's raw credit/quota
+//!   usage from Kiro (see [`usage`]), printed either as a human-readable
+//!   summary or raw JSON.
+//! - `models [--json]` — list the models currently resolvable by this
+//!   gateway (see [`models`]), including hidden/aliased names and the
+//!   Kiro credit-rate multiplier when known.
 //! - `update [--check] [-y] [--version <x.y.z>]` — check GitHub Releases for
 //!   a newer build and, unless `--check` is given, download and install it
 //!   in place (see the `update` module).
@@ -38,6 +44,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use futures_util::StreamExt;
 use lanius_core::Config;
 use lanius_core::auth::AuthManager;
+use lanius_core::model::{ModelInfoCache, ModelResolver, fetch_available_models};
 use lanius_core::upstream::{KiroEvent, KiroEventType, KiroHttpClient, parse_kiro_stream};
 
 mod update;
@@ -102,6 +109,18 @@ enum Command {
         #[arg(long)]
         capture: Option<PathBuf>,
     },
+    /// Show the configured account's credit/quota usage
+    Usage {
+        /// Print the raw Kiro usage-limits JSON instead of a formatted summary
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the models currently resolvable by this gateway
+    Models {
+        /// Print the model list as JSON instead of a formatted table
+        #[arg(long)]
+        json: bool,
+    },
     /// Check for and install a newer `lanius` release from GitHub
     Update {
         /// Only report whether a newer version is available; don't install it
@@ -140,6 +159,8 @@ fn main() -> Result<()> {
         Some(Command::Probe { prompt, capture }) => {
             runtime()?.block_on(probe(config, prompt, capture))
         }
+        Some(Command::Usage { json }) => runtime()?.block_on(usage(config, json)),
+        Some(Command::Models { json }) => runtime()?.block_on(models(config, json)),
         Some(Command::Update {
             check,
             yes,
@@ -359,8 +380,141 @@ async fn probe(config: Config, prompt: String, capture: Option<PathBuf>) -> Resu
     Ok(())
 }
 
-/// Running tally of decoded stream events, accumulated by [`print_events`]
-/// and printed as a one-line summary once the stream ends.
+/// Implements the `usage [--json]` subcommand: fetches the configured
+/// account's raw Kiro credit/quota usage via the same [`AuthManager`] /
+/// [`KiroHttpClient`] machinery as the gateway's `GET /usage`/`GET /account`
+/// routes (see [`lanius_core::account`]), then prints either the raw JSON
+/// payload or a human-readable summary.
+///
+/// Parameters:
+/// - `config`: validated gateway configuration (region, auth, etc.).
+/// - `json`: when `true`, print Kiro's raw usage-limits JSON (pretty
+///   printed) instead of the formatted summary.
+///
+/// Side effects: network I/O to obtain/refresh an access token and fetch
+/// usage limits; prints the result to stdout.
+///
+/// Errors if config validation fails, auth/token retrieval fails, or the
+/// upstream usage request fails.
+async fn usage(config: Config, json: bool) -> Result<()> {
+    config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let auth = Arc::new(AuthManager::new(config.clone()).map_err(|e| anyhow::anyhow!("{e}"))?);
+    let client = KiroHttpClient::new(auth.clone(), &config).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let raw = lanius_core::account::fetch_usage(&auth, &client)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to fetch usage: {e}"))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&raw)?);
+        return Ok(());
+    }
+
+    let summary = lanius_core::account::account_summary(&raw);
+    print_account_summary(&summary);
+    Ok(())
+}
+
+// Prints the account-summary JSON (as produced by
+// `lanius_core::account::account_summary`) as a human-readable report.
+fn print_account_summary(summary: &serde_json::Value) {
+    let str_field = |key: &str| summary.get(key).and_then(|v| v.as_str()).unwrap_or("-");
+    let f64_field = |key: &str| summary.get(key).and_then(|v| v.as_f64());
+    let bool_field = |key: &str| summary.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+
+    println!("account      : {}", str_field("accountName"));
+    println!("plan         : {}", str_field("planType"));
+    println!("status       : {}", str_field("accountStatus"));
+    if bool_field("isTrial") {
+        println!("trial expiry : {}", str_field("trialExpiryDate"));
+    }
+    let total_quota = f64_field("totalQuota").unwrap_or(0.0);
+    let current_usage = f64_field("currentUsage").unwrap_or(0.0);
+    let percentage = f64_field("usagePercentage").unwrap_or(0.0);
+    println!("usage        : {current_usage:.2} / {total_quota:.2} credits ({percentage:.2}%)");
+    if let (Some(bonus_quota), Some(bonus_usage)) =
+        (f64_field("bonusQuota"), f64_field("bonusUsage"))
+    {
+        println!("bonus        : {bonus_usage:.2} / {bonus_quota:.2} credits");
+    }
+    if let Some(reset_date) = summary.get("resetDate").and_then(|v| v.as_str()) {
+        println!("resets       : {reset_date}");
+    }
+}
+
+/// Implements the `models [--json]` subcommand: fetches the live Kiro model
+/// catalog (falling back silently to the built-in list if that fails) and
+/// resolves it the same way the gateway's `GET /v1/models` route does (see
+/// [`lanius_core::model::ModelResolver`]), then prints the resulting model
+/// list either as JSON or a formatted table.
+///
+/// Parameters:
+/// - `config`: validated gateway configuration (region, auth, aliases, etc.).
+/// - `json`: when `true`, print the model list as a JSON array instead of a
+///   formatted table.
+///
+/// Side effects: network I/O to obtain/refresh an access token and fetch
+/// the live model catalog; prints the result to stdout.
+///
+/// Errors if config validation fails or auth/token retrieval fails.
+async fn models(config: Config, json: bool) -> Result<()> {
+    config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let auth = Arc::new(AuthManager::new(config.clone()).map_err(|e| anyhow::anyhow!("{e}"))?);
+
+    let cache = ModelInfoCache::default();
+    cache.load_fallback();
+    match fetch_available_models(auth, &config).await {
+        Some(catalog) if !catalog.is_empty() => cache.update(catalog),
+        _ => tracing::warn!("could not fetch the live model catalog; using the fallback list"),
+    }
+
+    let resolver = ModelResolver::from_config(cache, &config);
+    let details = resolver.get_available_model_details();
+
+    if json {
+        let data: Vec<serde_json::Value> = details
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "id": d.id,
+                    "description": d.description,
+                    "rate_multiplier": d.rate_multiplier,
+                    "supports_thinking": d.supports_thinking,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+
+    let id_width = details
+        .iter()
+        .map(|d| d.id.chars().count())
+        .max()
+        .unwrap_or(2)
+        .max("MODEL".len());
+    println!(
+        "{:<id_width$}  {:>6}  {:<9}  DESCRIPTION",
+        "MODEL", "RATE", "THINKING"
+    );
+    for d in &details {
+        let rate = d
+            .rate_multiplier
+            .map(|r| format!("{r:.2}x"))
+            .unwrap_or_else(|| "-".to_string());
+        let thinking = if d.supports_thinking { "yes" } else { "no" };
+        let description = d.description.as_deref().unwrap_or("-");
+        println!(
+            "{:<id_width$}  {rate:>6}  {thinking:<9}  {description}",
+            d.id
+        );
+    }
+    println!("\n{} models available", details.len());
+    Ok(())
+}
+
 #[derive(Default)]
 struct Summary {
     content_events: usize,
@@ -549,6 +703,40 @@ mod tests {
     #[test]
     fn unknown_subcommand_is_rejected() {
         assert!(Cli::try_parse_from(["lanius", "bogus"]).is_err());
+    }
+
+    /// `usage` with no flags must default to the formatted summary
+    /// (`json: false`); `--json` must switch to raw JSON output.
+    #[test]
+    fn usage_json_flag_defaults_and_parses() {
+        let bare = Cli::try_parse_from(["lanius", "usage"]).expect("must parse");
+        match bare.command {
+            Some(Command::Usage { json }) => assert!(!json),
+            other => panic!("expected Usage, got {other:?}"),
+        }
+
+        let with_flag = Cli::try_parse_from(["lanius", "usage", "--json"]).expect("must parse");
+        match with_flag.command {
+            Some(Command::Usage { json }) => assert!(json),
+            other => panic!("expected Usage, got {other:?}"),
+        }
+    }
+
+    /// `models` with no flags must default to the formatted table
+    /// (`json: false`); `--json` must switch to JSON output.
+    #[test]
+    fn models_json_flag_defaults_and_parses() {
+        let bare = Cli::try_parse_from(["lanius", "models"]).expect("must parse");
+        match bare.command {
+            Some(Command::Models { json }) => assert!(!json),
+            other => panic!("expected Models, got {other:?}"),
+        }
+
+        let with_flag = Cli::try_parse_from(["lanius", "models", "--json"]).expect("must parse");
+        match with_flag.command {
+            Some(Command::Models { json }) => assert!(json),
+            other => panic!("expected Models, got {other:?}"),
+        }
     }
 
     /// `update` with no flags must default to a real (non-check-only)

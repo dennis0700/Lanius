@@ -21,8 +21,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::TimeZone;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -37,7 +36,6 @@ use crate::error::{GatewayError, Result};
 use crate::model::{ModelInfoCache, ModelResolver};
 use crate::truncation::TruncationStore;
 use crate::upstream::KiroHttpClient;
-use crate::utils::{API_RUNTIME, KIRO_ORIGIN, kiro_headers_for};
 
 /// Shared application state handed to every route handler via `axum`'s
 /// `State` extractor. Cloning is cheap: every field is an `Arc`, so all
@@ -318,100 +316,22 @@ async fn usage(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state.config.proxy_api_key) {
         return unauthorized();
     }
-    match fetch_usage(&state).await {
+    match crate::account::fetch_usage(&state.auth_manager, &state.http_client).await {
         Ok(value) => Json(value).into_response(),
-        Err(response) => *response,
+        Err(error) => gateway_response(&error, "Failed to fetch usage"),
     }
 }
 
 // `GET /account`: like `usage`, but returns a normalized summary shaped by
-// `account_summary` instead of Kiro's raw payload.
+// `crate::account::account_summary` instead of Kiro's raw payload.
 async fn account(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state.config.proxy_api_key) {
         return unauthorized();
     }
-    match fetch_usage(&state).await {
-        Ok(value) => Json(account_summary(&value)).into_response(),
-        Err(response) => *response,
+    match crate::account::fetch_usage(&state.auth_manager, &state.http_client).await {
+        Ok(value) => Json(crate::account::account_summary(&value)).into_response(),
+        Err(error) => gateway_response(&error, "Failed to fetch usage"),
     }
-}
-
-// Fetches raw usage-limits data from Kiro's control plane using the
-// configured account's auth. Returns `Err` with an already-built client
-// `Response` (502/etc.) on any failure so callers can short-circuit
-// without duplicating error-to-response mapping.
-async fn fetch_usage(state: &AppState) -> std::result::Result<Value, Box<Response>> {
-    let auth = &state.auth_manager;
-    let token = auth
-        .access_token_and_autofetch()
-        .await
-        .map_err(|error| Box::new(gateway_response(&error, "Failed to fetch usage")))?;
-    let mut payload = json!({"origin":KIRO_ORIGIN,"isEmailRequired":true});
-    // The Kiro control plane requires the profile ARN for CLI-identified requests.
-    if let Some(profile_arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
-        payload["profileArn"] = Value::String(profile_arn);
-    }
-    let body = serde_json::to_vec(&payload)
-        .map_err(|error| Box::new(gateway_response(&error.into(), "Failed to fetch usage")))?;
-    let mut headers = reqwest::header::HeaderMap::new();
-    for (name, value) in kiro_headers_for(&token, API_RUNTIME) {
-        if let Ok(value) = HeaderValue::from_str(&value) {
-            headers.insert(name, value);
-        }
-    }
-    headers.insert(
-        "x-amz-target",
-        HeaderValue::from_static(
-            "com.amazon.aws.codewhisperer.runtime.AmazonCodeWhispererService.GetUsageLimits",
-        ),
-    );
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/x-amz-json-1.0"),
-    );
-    let url = auth.control_plane_host().await;
-    let mut request = state.http_client.client().post(url).body(body);
-    for (name, value) in &headers {
-        request = request.header(name, value);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| Box::new(gateway_response(&error.into(), "Failed to fetch usage")))?;
-    let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| Box::new(gateway_response(&error.into(), "Failed to fetch usage")))?;
-    if status != reqwest::StatusCode::OK {
-        return Err(Box::new(upstream_usage_error_response(status, &bytes)));
-    }
-    serde_json::from_slice(&bytes).map_err(|_| {
-        Box::new(
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"detail":"Failed to fetch usage: invalid JSON response"})),
-            )
-                .into_response(),
-        )
-    })
-}
-
-// Builds a generic error response for a failed control-plane usage request
-// without leaking the upstream response body (which may contain sensitive
-// account details) to the client; only the status and body length are logged.
-fn upstream_usage_error_response(status: reqwest::StatusCode, bytes: &[u8]) -> Response {
-    tracing::debug!(
-        upstream_status = %status,
-        upstream_body_bytes = bytes.len(),
-        upstream_body = "[redacted]",
-        "control-plane usage request returned non-success status"
-    );
-    (
-        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-        Json(json!({"detail":"Failed to fetch usage from upstream"})),
-    )
-        .into_response()
 }
 
 // Converts a `GatewayError` into an HTTP `Response`, prefixing the message
@@ -430,92 +350,6 @@ fn gateway_response(error: &GatewayError, prefix: &str) -> Response {
         error.user_message()
     };
     (status, Json(json!({"detail":detail}))).into_response()
-}
-
-// Reshapes Kiro's raw usage-limits JSON into a flatter, UI-friendly account
-// summary: combines free-trial and standard quota/usage, sums any active
-// bonus allotments, and preserves "falsy-is-absent" semantics (0 quota/usage
-// is treated the same as missing).
-fn account_summary(usage: &Value) -> Value {
-    let user = usage.get("userInfo").and_then(Value::as_object);
-    let subscription = usage.get("subscriptionInfo").and_then(Value::as_object);
-    let breakdown = usage
-        .get("usageBreakdownList")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(Value::as_object);
-    let empty = serde_json::Map::new();
-    let user = user.unwrap_or(&empty);
-    let subscription = subscription.unwrap_or(&empty);
-    let breakdown = breakdown.unwrap_or(&empty);
-    let trial = breakdown
-        .get("freeTrialInfo")
-        .and_then(Value::as_object)
-        .unwrap_or(&empty);
-    let is_trial = trial.get("freeTrialStatus").and_then(Value::as_str) == Some("ACTIVE");
-    let trial_quota = precision_or_regular(trial, "usageLimitWithPrecision", "usageLimit");
-    let trial_usage = precision_or_regular(trial, "currentUsageWithPrecision", "currentUsage");
-    let free_quota = precision_or_regular(breakdown, "usageLimitWithPrecision", "usageLimit");
-    let free_usage = precision_or_regular(breakdown, "currentUsageWithPrecision", "currentUsage");
-    let bonuses: Vec<&serde_json::Map<String, Value>> = breakdown
-        .get("bonuses")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_object)
-                .filter(|bonus| bonus.get("status").and_then(Value::as_str) == Some("ACTIVE"))
-                .collect()
-        })
-        .unwrap_or_default();
-    let bonus_quota = (!bonuses.is_empty()).then(|| {
-        bonuses
-            .iter()
-            .map(|bonus| precision_or_regular(bonus, "usageLimitWithPrecision", "usageLimit"))
-            .sum::<f64>()
-    });
-    let bonus_usage = (!bonuses.is_empty()).then(|| {
-        bonuses
-            .iter()
-            .map(|bonus| precision_or_regular(bonus, "currentUsageWithPrecision", "currentUsage"))
-            .sum::<f64>()
-    });
-    let total_quota = trial_quota + free_quota;
-    let total_usage = trial_usage + free_usage;
-    let trial_expiry = trial
-        .get("freeTrialExpiry")
-        .and_then(Value::as_i64)
-        .and_then(|seconds| chrono::Local.timestamp_opt(seconds, 0).single())
-        .map(|time| time.format("%Y-%m-%d").to_string());
-    let account_status = subscription
-        .get("status")
-        .cloned()
-        .unwrap_or_else(|| Value::String(if is_trial { "Trial" } else { "Active" }.into()));
-    json!({
-        "accountName": user.get("email").cloned().unwrap_or_else(|| Value::String("User".into())), "email": user.get("email").cloned().unwrap_or(Value::Null), "provider": user.get("provider").cloned().unwrap_or(Value::Null),
-        "planType": subscription.get("type").cloned().unwrap_or_else(|| Value::String("Free".into())), "subscriptionTitle": subscription.get("subscriptionTitle").cloned().unwrap_or(Value::Null), "isTrial": is_trial,
-        "trialExpiryDate": trial_expiry, "subscriptionExpiryDate": subscription.get("expiryDate").cloned().or_else(|| subscription.get("subscriptionExpiryDate").cloned()).unwrap_or(Value::Null),
-        "totalQuota": total_quota, "currentUsage": total_usage, "remainingQuota": (total_quota != 0.0 && total_usage != 0.0).then_some(total_quota-total_usage), "usagePercentage": if total_quota != 0.0 && total_usage != 0.0 { ((total_usage / total_quota * 100.0) * 100.0).round() / 100.0 } else { 0.0 },
-        "trialQuota": trial_quota, "trialUsage": trial_usage, "freeQuota": free_quota, "freeUsage": free_usage,
-        "bonusQuota": bonus_quota, "bonusUsage": bonus_usage, "bonusRemaining": bonus_quota.zip(bonus_usage).and_then(|(quota, used)| (quota != 0.0 && used != 0.0).then_some(quota-used)),
-        "accountStatus": account_status, "resetDate": breakdown.get("resetDate").cloned().unwrap_or(Value::Null), "overageEnabled": breakdown.get("overageEnabled").cloned().unwrap_or(Value::Bool(false)),
-    })
-}
-
-// Prefers a "with precision" numeric field over its rounded counterpart,
-// falling back to the rounded field when the precise one is absent or zero
-// (Kiro sometimes omits precision fields, represented as 0.0 here).
-fn precision_or_regular(
-    values: &serde_json::Map<String, Value>,
-    precision: &str,
-    regular: &str,
-) -> f64 {
-    values
-        .get(precision)
-        .and_then(Value::as_f64)
-        .filter(|value| *value != 0.0)
-        .or_else(|| values.get(regular).and_then(Value::as_f64))
-        .unwrap_or(0.0)
 }
 
 // Checks the `Authorization: Bearer <key>` header against the configured
@@ -679,7 +513,6 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -726,33 +559,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    #[test]
-    fn account_route_keeps_falsy_is_absent_semantics_and_all_fields() {
-        let at = chrono::Local
-            .with_ymd_and_hms(2026, 1, 2, 0, 0, 0)
-            .single()
-            .unwrap_or_else(|| panic!("fixed local time must exist"));
-        let value = account_summary(
-            &json!({"userInfo":{"email":"a@b","provider":"x"},"subscriptionInfo":{"type":"Pro"},"usageBreakdownList":[{"freeTrialInfo":{"freeTrialStatus":"ACTIVE","freeTrialExpiry":at.timestamp(),"usageLimit":5,"currentUsage":2},"usageLimit":0,"currentUsage":0,"bonuses":[{"status":"ACTIVE","usageLimit":3,"currentUsage":1}]}]}),
-        );
-        assert_eq!(value.as_object().map(serde_json::Map::len), Some(22));
-        assert_eq!(value["remainingQuota"], 3.0);
-        assert_eq!(value["bonusRemaining"], 2.0);
-    }
-
-    #[tokio::test]
-    async fn control_plane_error_body_is_not_returned_to_clients() {
-        let secret = b"Authorization: Bearer upstream-secret-token";
-        let response = upstream_usage_error_response(reqwest::StatusCode::BAD_GATEWAY, secret);
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap_or_else(|error| panic!("response body must be readable: {error}"));
-        let text = String::from_utf8(body.to_vec())
-            .unwrap_or_else(|error| panic!("response body must be UTF-8 JSON: {error}"));
-        assert!(!text.contains("upstream-secret-token"));
-        assert_eq!(text, r#"{"detail":"Failed to fetch usage from upstream"}"#);
-    }
+    // `account_summary`/the control-plane error redaction are now owned by
+    // `crate::account` and tested there; see
+    // `account::tests::account_summary_keeps_falsy_is_absent_semantics_and_all_fields`
+    // and `account::tests::control_plane_error_body_is_not_leaked_into_the_error`.
 
     #[test]
     fn cors_allows_only_local_origins_and_explicit_api_headers() {

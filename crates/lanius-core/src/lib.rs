@@ -42,6 +42,7 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::all)]
 
+pub mod account;
 pub mod api;
 pub mod auth;
 pub mod compat;
