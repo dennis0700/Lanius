@@ -586,7 +586,10 @@ pub fn ensure_alternating_roles(messages: Vec<UnifiedMessage>) -> Vec<UnifiedMes
                 .last()
                 .is_some_and(|previous: &UnifiedMessage| previous.role == "user")
         {
-            result.push(UnifiedMessage::text("assistant", EMPTY_PLACEHOLDER));
+            // An empty assistant turn here is fine — confirmed against the live Kiro API —
+            // and avoids leaking placeholder text into the model's own conversation history
+            // (see `build_assistant`'s doc comment).
+            result.push(UnifiedMessage::text("assistant", ""));
         }
         result.push(message);
     }
@@ -755,9 +758,10 @@ pub fn build_kiro_payload(
     }
     if current.role == "assistant" {
         // Kiro's `currentMessage` must be a user turn; if the conversation actually ended
-        // on an assistant message, move it into history instead and substitute an empty
-        // placeholder user turn as the current message.
-        history.push(json!({"assistantResponseMessage":{"content":nonempty(&current_content)}}));
+        // on an assistant message, move it into history instead (via `build_assistant`, so
+        // any `toolUses` on this turn are preserved rather than silently dropped) and
+        // substitute a placeholder user turn as the current message.
+        history.push(json!({"assistantResponseMessage": build_assistant(&current)?}));
         current_content = EMPTY_PLACEHOLDER.to_owned();
     }
     if current_content.is_empty() {
@@ -914,13 +918,18 @@ fn build_user(message: &UnifiedMessage, model_id: &str, tools: Vec<Value>, curre
 
 /// Builds a Kiro `assistantResponseMessage` object from a unified assistant message,
 /// including its `toolUses` array (via `extract_tool_uses`) if it has any tool calls.
+///
+/// Unlike [`build_user`], `content` is passed through as-is even when empty: Kiro accepts
+/// an empty `assistantResponseMessage.content` (confirmed against the live API, with and
+/// without `toolUses`), and padding it with [`EMPTY_PLACEHOLDER`] would just be narrative
+/// noise the model can pick up on and start echoing back in its own replies.
 fn build_assistant(message: &UnifiedMessage) -> Result<Value> {
     let mut assistant = Map::new();
+    let uses = extract_tool_uses(&message.tool_calls)?;
     assistant.insert(
         "content".to_owned(),
-        Value::String(nonempty(&extract_text_content(&message.content))),
+        Value::String(extract_text_content(&message.content)),
     );
-    let uses = extract_tool_uses(&message.tool_calls)?;
     if !uses.is_empty() {
         assistant.insert("toolUses".to_owned(), Value::Array(uses));
     }
@@ -939,11 +948,11 @@ fn extract_tool_uses(calls: &[Value]) -> Result<Vec<Value>> {
 }
 
 /// Converts unified tool-result JSON values into Kiro's `toolResults` entry shape,
-/// flattening each result's content to plain text (via [`extract_text_content`]) and
-/// substituting [`EMPTY_RESULT`] for an empty result, since Kiro requires non-empty result
-/// content.
+/// flattening each result's content to plain text (via [`extract_text_content`]). An empty
+/// result's content is passed through as `""` rather than padded with placeholder text —
+/// confirmed against the live Kiro API, which accepts an empty `toolResults[].content[].text`.
 fn convert_tool_results_to_kiro_format(results: &[Value]) -> Vec<Value> {
-    results.iter().map(|result| { let content = nonempty(&extract_text_content(result.get("content").unwrap_or(&Value::Null))); json!({"content":[{"text":content}],"status":"success","toolUseId":result.get("tool_use_id").and_then(Value::as_str).unwrap_or_default()}) }).collect()
+    results.iter().map(|result| { let content = extract_text_content(result.get("content").unwrap_or(&Value::Null)); json!({"content":[{"text":content}],"status":"success","toolUseId":result.get("tool_use_id").and_then(Value::as_str).unwrap_or_default()}) }).collect()
 }
 /// Converts unified images into Kiro's image entry shape (`{"format": ..., "source": {"bytes": ...}}`).
 /// If an image's `data` still looks like a full `data:` URL (rather than already-extracted

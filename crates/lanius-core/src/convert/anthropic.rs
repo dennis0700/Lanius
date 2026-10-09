@@ -310,10 +310,12 @@ fn extract_tool_uses(blocks: &[ContentBlock], aliases: &mut ToolNameAliases) -> 
     blocks.iter().filter_map(|block| match block { ContentBlock::ToolUse(tool) if !tool.id.is_empty() && !tool.name.is_empty() => Some(serde_json::json!({"id":tool.id,"type":"function","function":{"name":aliases.alias_for(&tool.name),"arguments":tool.input}})), _=>None }).collect()
 }
 /// Extracts `ToolResult` blocks (with a non-empty `tool_use_id`) from a user message's
-/// content blocks, flattening each result's content to text via [`tool_result_text`] and
-/// substituting `"(empty result)"` for an empty result.
+/// content blocks, flattening each result's content to text via [`tool_result_text`].
+/// Empty content is passed through as `""` — confirmed against the live Kiro API, which
+/// accepts an empty `toolResults[].content[].text` — rather than padded with placeholder
+/// text (see [`core::nonempty`]'s doc comment for why that matters).
 fn extract_tool_results(blocks: &[ContentBlock]) -> Vec<Value> {
-    blocks.iter().filter_map(|block| match block { ContentBlock::ToolResult(result) if !result.tool_use_id.is_empty() => { let text=result.content.as_ref().map(tool_result_text).unwrap_or_default(); Some(serde_json::json!({"type":"tool_result","tool_use_id":result.tool_use_id,"content":if text.is_empty(){"(empty result)"}else{&text}})) }, _=>None }).collect()
+    blocks.iter().filter_map(|block| match block { ContentBlock::ToolResult(result) if !result.tool_use_id.is_empty() => { let text=result.content.as_ref().map(tool_result_text).unwrap_or_default(); Some(serde_json::json!({"type":"tool_result","tool_use_id":result.tool_use_id,"content":text})) }, _=>None }).collect()
 }
 /// Flattens an Anthropic tool-result `content` value to plain text: a plain string passes
 /// through, an array of blocks contributes only its `Text` blocks (mirroring
