@@ -21,7 +21,7 @@ This is a Cargo workspace with three crates:
 ### Request flow (`lanius-core`)
 
 ```mermaid
-flowchart TD
+flowchart LR
     client["client (OpenAI/Anthropic SDK)"]
     api["api::openai / api::anthropic<br/>(routes, request/response models, SSE framing)"]
     convert["convert<br/>(client format -&gt; unified internal representation -&gt; Kiro payload)"]

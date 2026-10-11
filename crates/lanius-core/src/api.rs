@@ -2,9 +2,9 @@
 //!
 //! Lanius proxies requests from clients speaking either the Anthropic
 //! Messages API or the OpenAI Chat Completions API, converts them into the
-//! Kiro (Amazon Q Developer / AWS CodeWhisperer) wire format, forwards them
-//! to the upstream Kiro service via [`crate::upstream`], and translates the
-//! upstream response/stream back into the client's expected protocol.
+//! Kiro wire format, forwards them to the upstream Kiro service via
+//! [`crate::upstream`], and translates the upstream response/stream back into
+//! the client's expected protocol.
 //!
 //! This module is a thin namespace that groups the two protocol
 //! implementations:

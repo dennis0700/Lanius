@@ -1,7 +1,6 @@
 //! `lanius-core` is the engine behind Lanius: an OpenAI- and Anthropic-compatible
-//! API gateway that sits in front of the Kiro backend (Amazon Q Developer /
-//! AWS CodeWhisperer) and lets existing OpenAI/Anthropic clients talk to it
-//! transparently.
+//! API gateway that sits in front of the Kiro backend and lets existing
+//! OpenAI/Anthropic clients talk to it transparently.
 //!
 //! # Architecture and data flow
 //!

@@ -19,14 +19,13 @@ module's own facade (e.g. `crate::upstream::KiroHttpClient`,
 
 ## Why a gateway at all
 
-Kiro (Amazon Q Developer / AWS CodeWhisperer) speaks its own request/
-response protocol over a custom AWS event-stream framing, not the OpenAI
-Chat Completions API or the Anthropic Messages API. Lanius sits in front of
-Kiro and exposes both of those familiar wire formats, so existing tools,
-SDKs, and editor integrations that speak OpenAI or Anthropic can point at
-Lanius's `/v1/...` endpoints without any code changes, while Lanius handles
-authentication, protocol translation, and the quirks of Kiro's actual
-backend.
+Kiro speaks its own request/response protocol over a custom AWS
+event-stream framing, not the OpenAI Chat Completions API or the Anthropic
+Messages API. Lanius sits in front of Kiro and exposes both of those
+familiar wire formats, so existing tools, SDKs, and editor integrations
+that speak OpenAI or Anthropic can point at Lanius's `/v1/...` endpoints
+without any code changes, while Lanius handles authentication, protocol
+translation, and the quirks of Kiro's actual backend.
 
 ## Module map (`lanius-core`)
 

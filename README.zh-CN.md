@@ -21,7 +21,7 @@ Completions API 或 Anthropic Messages API 构建的工具和客户端无需了�
 ### 请求流程（`lanius-core`）
 
 ```mermaid
-flowchart TD
+flowchart LR
     client["客户端（OpenAI/Anthropic SDK）"]
     api["api::openai / api::anthropic<br/>（路由、请求/响应模型、SSE 封帧）"]
     convert["convert<br/>（客户端格式 -&gt; 统一内部表示 -&gt; Kiro payload）"]

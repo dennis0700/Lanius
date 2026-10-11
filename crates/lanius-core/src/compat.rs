@@ -1,12 +1,11 @@
 //! Request/response compatibility hook pipeline sitting between Lanius's OpenAI/Anthropic
 //! API surface and the Kiro backend.
 //!
-//! Kiro (and the AWS CodeWhisperer control plane behind it) has a handful of quirks that
-//! don't belong in [`crate::convert`] (which is about translating message *shapes*) or in
-//! [`crate::auth`] (which is about *credentials*), but still need to happen on essentially
-//! every request/response. This module collects those quirks as small, independently
-//! testable [`RequestHook`]/[`ResponseHook`] implementations, run in order by a
-//! [`CompatibilityPipeline`]:
+//! Kiro has a handful of quirks that don't belong in [`crate::convert`] (which is about
+//! translating message *shapes*) or in [`crate::auth`] (which is about *credentials*), but
+//! still need to happen on essentially every request/response. This module collects
+//! those quirks as small, independently testable [`RequestHook`]/[`ResponseHook`]
+//! implementations, run in order by a [`CompatibilityPipeline`]:
 //!
 //! - **Tool name aliasing** ([`ToolNameAliases`]) — Kiro restricts tool names to 64
 //!   ASCII-alphanumeric/`_`/`-` characters, but OpenAI/Anthropic clients routinely send

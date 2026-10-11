@@ -16,7 +16,7 @@ Lanius 是一个包含三个 crate 的 Cargo workspace：
 
 ## 为什么需要网关
 
-Kiro（Amazon Q Developer / AWS CodeWhisperer）使用自己的请求/响应协议，并基于自定义的 AWS event-stream 分帧传输，而不是 OpenAI Chat Completions API 或 Anthropic Messages API。Lanius 位于 Kiro 前方，对外同时暴露这两种常见的线上格式，因此现有的、使用 OpenAI 或 Anthropic 协议的工具、SDK 和编辑器集成，无需修改任何代码即可指向 Lanius 的 `/v1/...` 端点；而认证、协议转换以及 Kiro 实际后端的各种怪癖则由 Lanius 负责处理。
+Kiro 使用自己的请求/响应协议，并基于自定义的 AWS event-stream 分帧传输，而不是 OpenAI Chat Completions API 或 Anthropic Messages API。Lanius 位于 Kiro 前方，对外同时暴露这两种常见的线上格式，因此现有的、使用 OpenAI 或 Anthropic 协议的工具、SDK 和编辑器集成，无需修改任何代码即可指向 Lanius 的 `/v1/...` 端点；而认证、协议转换以及 Kiro 实际后端的各种怪癖则由 Lanius 负责处理。
 
 ## 模块图（`lanius-core`）
 
