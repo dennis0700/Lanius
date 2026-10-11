@@ -2,10 +2,9 @@ English | [简体中文](README.zh-CN.md)
 
 # Lanius
 
-An OpenAI- and Anthropic-compatible API gateway for the Kiro backend
-(Amazon Q Developer / AWS CodeWhisperer). Lanius lets tools and clients built
-against the OpenAI Chat Completions API or the Anthropic Messages API talk
-to Kiro without knowing anything about Kiro's own protocol.
+An OpenAI- and Anthropic-compatible API gateway for Kiro. Lanius lets tools
+and clients built against the OpenAI Chat Completions API or the Anthropic
+Messages API talk to Kiro without knowing anything about Kiro's own protocol.
 
 ![Lanius desktop app](desktop-ui.png)
 
@@ -98,7 +97,6 @@ for the full, authoritative list and defaults:
 | `REFRESH_TOKEN` / `PROFILE_ARN` | Refresh token and (optional) profile ARN used to authenticate with Kiro. |
 | `KIRO_CREDS_FILE` / `KIRO_CLI_DB_FILE` | Alternative credential sources (JSON file / Kiro CLI's SQLite DB). |
 | `LOG_LEVEL` / `DEBUG_MODE` | Logging verbosity and optional request/response debug capture. |
-| `WEB_SEARCH_ENABLED` | Whether OpenAI-style requests get a server-executed `web_search` tool (default `true`). |
 
 The gateway exposes:
 
@@ -109,50 +107,6 @@ The gateway exposes:
 
 All routes other than `/health` require the `PROXY_API_KEY` bearer token, and
 CORS is restricted to `localhost`/`127.0.0.1` origins.
-
-### Web search
-
-Web search is backed by Kiro's native search, the same one Kiro CLI uses:
-
-- **Claude Code / Cowork**: the built-in WebSearch tool works. Its search
-  sub-requests are answered directly with `server_tool_use` +
-  `web_search_tool_result` blocks.
-- **Anthropic API**: requests that offer the server tool
-  (`web_search_20250305`) get a `web_search` tool that Lanius runs on the
-  model's behalf, honoring `max_uses` and reporting
-  `usage.server_tool_use.web_search_requests`.
-- **OpenAI API**: a `web_search` tool is offered (unless the client defines
-  its own) and executed by Lanius, so clients only see the final answer.
-  Disable with `WEB_SEARCH_ENABLED=false`.
-
-For Kiro enterprise accounts, Lanius honors the console's "Web search and
-web fetch tools" switch: when it is off, no search tool is offered.
-See [`docs/request-flow.md`](docs/request-flow.md#server-side-web-search).
-
-### Context compaction
-
-Claude clients compact long conversations automatically. Lanius reports
-Kiro's actual context usage as `input_tokens` in the streamed
-`message_delta`, and returns Kiro's context-limit rejection as Anthropic's
-`400 invalid_request_error` "prompt is too long: N tokens > M maximum", the
-error Claude clients compact on.
-
-### Network access
-
-To use Lanius behind a firewall or proxy, allow these hosts (all are on
-Kiro's [firewall allowlist](https://kiro.dev/docs/privacy-and-security/firewalls/)
-except GitHub):
-
-| Host | Used for |
-|---|---|
-| `runtime.<region>.kiro.dev` | Chat and web search |
-| `management.<region>.kiro.dev` | Profiles, model list, usage, enterprise policy |
-| `prod.<region>.auth.desktop.kiro.dev` | Token refresh (social / Builder ID login) |
-| `oidc.<region>.amazonaws.com` | Token refresh (IAM Identity Center) |
-| `api.github.com`, `github.com`, `release-assets.githubusercontent.com` | Update checks and downloads only |
-
-`VPN_PROXY_URL` routes the `runtime`/`management` traffic through an HTTP or
-SOCKS proxy; token refresh connects directly.
 
 ### Deploying on Linux (systemd)
 

@@ -2,9 +2,9 @@
 
 # Lanius
 
-面向 Kiro 后端（Amazon Q Developer / AWS CodeWhisperer）的 OpenAI 与 Anthropic
-兼容 API 网关。借助 Lanius，基于 OpenAI Chat Completions API 或 Anthropic
-Messages API 构建的工具和客户端无需了解 Kiro 自身的协议即可直接与 Kiro 通信。
+面向 Kiro 的 OpenAI 与 Anthropic 兼容 API 网关。借助 Lanius，基于 OpenAI Chat
+Completions API 或 Anthropic Messages API 构建的工具和客户端无需了解 Kiro 自身的
+协议即可直接与 Kiro 通信。
 
 ![Lanius 桌面应用](desktop-ui.png)
 
@@ -91,7 +91,6 @@ lanius help
 | `REFRESH_TOKEN` / `PROFILE_ARN` | 用于向 Kiro 认证的 refresh token 和（可选的）profile ARN。 |
 | `KIRO_CREDS_FILE` / `KIRO_CLI_DB_FILE` | 备选凭据来源（JSON 文件 / Kiro CLI 的 SQLite 数据库）。 |
 | `LOG_LEVEL` / `DEBUG_MODE` | 日志详细程度，以及可选的请求/响应调试捕获。 |
-| `WEB_SEARCH_ENABLED` | 是否为 OpenAI 风格的请求提供由网关执行的 `web_search` 工具（默认 `true`）。 |
 
 网关提供以下接口：
 
@@ -102,45 +101,6 @@ lanius help
 
 除 `/health` 外的所有路由都需要 `PROXY_API_KEY` bearer token，且 CORS 仅允许
 `localhost`/`127.0.0.1` 来源。
-
-### Web 搜索
-
-Web 搜索由 Kiro 原生搜索提供，和 Kiro CLI 用的是同一个：
-
-- **Claude Code / Cowork**：内置的 WebSearch 工具可以直接用。它发出的搜索子请求
-  会直接以 `server_tool_use` + `web_search_tool_result` 返回结果。
-- **Anthropic API**：请求里带了服务端工具（`web_search_20250305`）时，会换成一个
-  由 Lanius 代模型执行的 `web_search` 工具，遵守 `max_uses`，并在
-  `usage.server_tool_use.web_search_requests` 里上报次数。
-- **OpenAI API**：会提供一个 `web_search` 工具（客户端自己定义了同名工具时除外），
-  由 Lanius 执行，客户端只收到最终回答。可通过 `WEB_SEARCH_ENABLED=false` 关闭。
-
-对于 Kiro 企业账号，Lanius 会遵守 console 里的 "Web search and web fetch tools"
-开关：关闭时不提供搜索工具。详见
-[`docs/zh-CN/request-flow.md`](docs/zh-CN/request-flow.md#服务端-web-搜索)。
-
-### 上下文压缩（Compact）
-
-Claude 客户端会自动压缩过长的对话。Lanius 会在流式的 `message_delta` 里以
-`input_tokens` 上报 Kiro 实际的上下文用量，并把 Kiro 的上下文超限错误转成
-Anthropic 原生的 `400 invalid_request_error` "prompt is too long: N tokens > M maximum"，
-也就是 Claude 客户端据以触发压缩的那种错误。
-
-### 网络访问
-
-如果在防火墙或代理后面使用 Lanius，需要放行以下主机（除 GitHub 外都在 Kiro 的
-[防火墙白名单](https://kiro.dev/docs/privacy-and-security/firewalls/)上）：
-
-| 主机 | 用途 |
-|---|---|
-| `runtime.<region>.kiro.dev` | 对话和 Web 搜索 |
-| `management.<region>.kiro.dev` | profile、模型列表、用量、企业策略 |
-| `prod.<region>.auth.desktop.kiro.dev` | token 刷新（社交账号 / Builder ID 登录） |
-| `oidc.<region>.amazonaws.com` | token 刷新（IAM Identity Center） |
-| `api.github.com`、`github.com`、`release-assets.githubusercontent.com` | 仅用于检查和下载更新 |
-
-`VPN_PROXY_URL` 可以让 `runtime`/`management` 的流量走 HTTP 或 SOCKS 代理；token
-刷新不走代理，直接连接。
 
 ### 在 Linux 上部署（systemd）
 

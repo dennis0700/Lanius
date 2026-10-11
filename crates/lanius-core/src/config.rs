@@ -56,7 +56,7 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Human-readable application title, used in server metadata/UI.
 pub const APP_TITLE: &str = "Lanius";
 /// One-line description of the gateway's purpose, used in server metadata/UI.
-pub const APP_DESCRIPTION: &str = "OpenAI- and Anthropic-compatible bridge for the Kiro API (Amazon Q Developer / AWS CodeWhisperer).";
+pub const APP_DESCRIPTION: &str = "OpenAI- and Anthropic-compatible bridge for the Kiro API.";
 
 /// Default set of model ids to hide from the advertised `/v1/models` list
 /// (they remain resolvable by name, just not listed).
