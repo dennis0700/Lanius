@@ -33,6 +33,7 @@ use super::models::{
 use super::sse::{
     AnthropicSseFormatter, DEFAULT_PING_INTERVAL, RequestTokenInput, response_from_stream_result,
 };
+use super::web_search;
 use crate::api::ErrorDetail;
 use crate::auth::AuthManager;
 use crate::compat::ToolNameAliases;
@@ -99,21 +100,20 @@ async fn messages(
     }
     apply_truncation_recovery(&mut request, &state.truncation_store, &state.config);
 
-    if has_native_web_search(&request) {
-        return error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            "api_error",
-            "Native web_search MCP bypass is not yet available in this Rust implementation",
-        );
-    }
-
     let token_input = match token_input(&request) {
         Ok(input) => input,
         Err(error) => return gateway_error_response(&error),
     };
+
+    if web_search::is_web_search_request(&request) {
+        return web_search_response(state, request, token_input).await;
+    }
     let conversation_id = conversation_id(&request);
     let prepared = match prepare_request(&state, &request, &conversation_id).await {
         Ok(prepared) => prepared,
+        Err(error) if error.is_context_length_exceeded() => {
+            return prompt_too_long_response(&state, &request, &token_input, &error);
+        }
         Err(error) => return gateway_error_response(&error),
     };
 
@@ -138,6 +138,9 @@ async fn messages(
                     &prepared.tool_name_aliases,
                 ))
                 .into_response()
+            }
+            Err(error) if error.is_context_length_exceeded() => {
+                prompt_too_long_response(&state, &request, &token_input, &error)
             }
             Err(error) => gateway_error_response(&error),
         }
@@ -273,6 +276,247 @@ fn stream_response(
         Body::from_stream(body),
     )
         .into_response()
+}
+
+/// Handles a request that offers Anthropic's server-side web search tool by
+/// running the search loop in [`web_search::run`] (Kiro has no native
+/// equivalent), then rendering the finished turn as JSON or SSE.
+///
+/// The loop needs complete upstream rounds before it can decide whether to
+/// search again, so streaming clients get `message_start` immediately,
+/// `ping` heartbeats while the loop runs, and then the whole turn's content
+/// blocks at once.
+async fn web_search_response(
+    state: AnthropicState,
+    request: AnthropicMessagesRequest,
+    token_input: RequestTokenInput,
+) -> Response {
+    let (rewritten, settings) = web_search::rewrite_request(&request);
+    // Open the first round before responding, like the normal path's
+    // preflight, so setup failures (notably a context-length rejection,
+    // which clients answer by compacting) are returned as real HTTP errors
+    // rather than as an `error` frame after the SSE stream has started.
+    let conversation_id = conversation_id(&rewritten);
+    let primed = match prepare_request(&state, &rewritten, &conversation_id).await {
+        Ok(prepared) => prepared,
+        Err(error) if error.is_context_length_exceeded() => {
+            return prompt_too_long_response(&state, &request, &token_input, &error);
+        }
+        Err(error) => return gateway_error_response(&error),
+    };
+    if !request.stream {
+        let mut round = KiroRound {
+            state: &state,
+            primed: Some(primed),
+        };
+        let outcome = match run_web_search(&state, rewritten, &settings, &mut round).await {
+            Ok(outcome) => outcome,
+            Err(error) if error.is_context_length_exceeded() => {
+                return prompt_too_long_response(&state, &request, &token_input, &error);
+            }
+            Err(error) => return gateway_error_response(&error),
+        };
+        return Json(web_search_message(
+            &state,
+            &request.model,
+            &token_input,
+            outcome,
+        ))
+        .into_response();
+    }
+
+    let body = async_stream::stream! {
+        let mut formatter = AnthropicSseFormatter::new(
+            request.model.clone(),
+            (*state.model_cache).clone(),
+            token_input.clone(),
+            String::new(),
+            None,
+        );
+        for frame in formatter.start().unwrap_or_default() {
+            yield Ok::<Bytes, Infallible>(Bytes::from(frame));
+        }
+        let mut round = KiroRound { state: &state, primed: Some(primed) };
+        let work = run_web_search(&state, rewritten, &settings, &mut round);
+        futures_util::pin_mut!(work);
+        let mut pings = tokio::time::interval(DEFAULT_PING_INTERVAL);
+        pings.tick().await;
+        let result = loop {
+            tokio::select! {
+                _ = pings.tick() => {
+                    if let Ok(frame) = formatter.ping() {
+                        yield Ok(Bytes::from(frame));
+                    }
+                }
+                result = &mut work => break result,
+            }
+        };
+        match result {
+            Ok(outcome) => {
+                let message = web_search_message(&state, &request.model, &token_input, outcome);
+                for frame in message_to_sse_frames(&message) {
+                    yield Ok(Bytes::from(frame));
+                }
+            }
+            Err(error) => {
+                error.report("POST /v1/messages web_search");
+                for frame in formatter.error(&error.user_message()).unwrap_or_default() {
+                    yield Ok(Bytes::from(frame));
+                }
+            }
+        }
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::CONNECTION, "keep-alive"),
+        ],
+        Body::from_stream(body),
+    )
+        .into_response()
+}
+
+/// One upstream round for [`web_search::run`]: converts the (rewritten)
+/// request, sends it to Kiro, and collects the full response with the
+/// original tool names restored. `primed` holds the already-opened first
+/// round (see [`web_search_response`]); later rounds open their own.
+struct KiroRound<'a> {
+    state: &'a AnthropicState,
+    primed: Option<PreparedRequest>,
+}
+
+impl web_search::Round for KiroRound<'_> {
+    async fn send(
+        &mut self,
+        request: &AnthropicMessagesRequest,
+    ) -> Result<crate::upstream::StreamResult> {
+        let prepared = match self.primed.take() {
+            Some(prepared) => prepared,
+            None => {
+                let conversation_id = conversation_id(request);
+                prepare_request(self.state, request, &conversation_id).await?
+            }
+        };
+        let mut result = collect_stream_to_result(
+            prepared.source,
+            self.state.config.first_token_timeout,
+            self.state.config.streaming_read_timeout,
+        )
+        .await?;
+        result.content = prepared.tool_name_aliases.restore_text(&result.content);
+        for tool in &mut result.tool_calls {
+            tool.name = prepared.tool_name_aliases.original_for(&tool.name);
+        }
+        Ok(result)
+    }
+}
+
+async fn run_web_search(
+    state: &AnthropicState,
+    request: AnthropicMessagesRequest,
+    settings: &web_search::WebSearchSettings,
+    round: &mut KiroRound<'_>,
+) -> Result<web_search::WebSearchOutcome> {
+    let http_client = KiroHttpClient::new(state.auth_manager.clone(), &state.config)?;
+    web_search::run(request, settings, round, &state.auth_manager, &http_client).await
+}
+
+/// Assembles the final Anthropic message for a web-search turn: the search
+/// blocks first, then the last round's own content (rendered by
+/// [`response_from_stream_result`], which also computes usage and
+/// `stop_reason`), plus Anthropic's `server_tool_use` usage counter.
+fn web_search_message(
+    state: &AnthropicState,
+    model: &str,
+    token_input: &RequestTokenInput,
+    outcome: web_search::WebSearchOutcome,
+) -> Value {
+    let mut message = response_from_stream_result(
+        outcome.last,
+        model,
+        &state.model_cache,
+        token_input,
+        &ToolNameAliases::default(),
+    );
+    let mut content = outcome.blocks;
+    if let Some(Value::Array(last)) = message.get_mut("content").map(Value::take) {
+        content.extend(last);
+    }
+    message["content"] = Value::Array(content);
+    message["usage"]["server_tool_use"] = json!({"web_search_requests": outcome.searches});
+    message
+}
+
+/// Replays a complete Anthropic message as the SSE frame sequence a
+/// streaming client expects (the `message_start` frame is assumed to have
+/// been sent already).
+fn message_to_sse_frames(message: &Value) -> Vec<String> {
+    let mut frames = Vec::new();
+    let mut push = |event: &str, data: Value| {
+        if let Ok(frame) = super::sse::format_sse_event(event, &data) {
+            frames.push(frame);
+        }
+    };
+    let blocks = message
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for (index, block) in blocks.into_iter().enumerate() {
+        let kind = block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let (start, delta) = match kind {
+            "text" => (
+                json!({"type": "text", "text": ""}),
+                Some(json!({"type": "text_delta", "text": block["text"]})),
+            ),
+            "thinking" => (
+                json!({"type": "thinking", "thinking": ""}),
+                Some(json!({"type": "thinking_delta", "thinking": block["thinking"]})),
+            ),
+            "tool_use" => (
+                json!({"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}),
+                Some(
+                    json!({"type": "input_json_delta", "partial_json": block["input"].to_string()}),
+                ),
+            ),
+            _ => (block.clone(), None),
+        };
+        push(
+            "content_block_start",
+            json!({"type": "content_block_start", "index": index, "content_block": start}),
+        );
+        if let Some(delta) = delta {
+            push(
+                "content_block_delta",
+                json!({"type": "content_block_delta", "index": index, "delta": delta}),
+            );
+        }
+        if kind == "thinking" {
+            push(
+                "content_block_delta",
+                json!({"type": "content_block_delta", "index": index,
+                       "delta": {"type": "signature_delta", "signature": block["signature"]}}),
+            );
+        }
+        push(
+            "content_block_stop",
+            json!({"type": "content_block_stop", "index": index}),
+        );
+    }
+    push(
+        "message_delta",
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": message["stop_reason"], "stop_sequence": Value::Null},
+            "usage": message["usage"],
+        }),
+    );
+    push("message_stop", json!({"type": "message_stop"}));
+    frames
 }
 
 /// The outcome of [`prepare_request`]: an open upstream byte stream ready
@@ -473,6 +717,29 @@ fn gateway_error_response(error: &GatewayError) -> Response {
     )
 }
 
+/// Reports Kiro's context-window rejection the way the Anthropic API does
+/// (`400 invalid_request_error`, "prompt is too long: N tokens > M maximum"),
+/// so clients such as Claude Code / Cowork recognise it and compact the
+/// conversation instead of surfacing a generic failure. `N` is the local
+/// estimate, floored at `M + 1` so the message is always self-consistent.
+fn prompt_too_long_response(
+    state: &AnthropicState,
+    request: &AnthropicMessagesRequest,
+    token_input: &RequestTokenInput,
+    error: &GatewayError,
+) -> Response {
+    let maximum = state.model_cache.get_max_input_tokens(&request.model) as usize;
+    let tokens = token_input.estimate(true).max(maximum + 1);
+    ErrorDetail::attach(
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            &format!("prompt is too long: {tokens} tokens > {maximum} maximum"),
+        ),
+        error.log_detail(),
+    )
+}
+
 /// Converts the request's messages/tools/system prompt into the plain
 /// [`serde_json::Value`] shapes consumed by [`estimate_request_tokens`].
 fn token_input(request: &AnthropicMessagesRequest) -> Result<RequestTokenInput> {
@@ -530,21 +797,6 @@ fn role_name(role: AnthropicMessageRole) -> &'static str {
         AnthropicMessageRole::Assistant => "assistant",
         AnthropicMessageRole::System => "system",
     }
-}
-
-/// Detects whether the request asked for Anthropic's server-hosted web
-/// search tool (any tool whose `type` starts with `"web_search"`). This
-/// gateway does not yet implement the native MCP bypass for that tool, so
-/// callers reject such requests with a 501 rather than silently ignoring
-/// the tool.
-fn has_native_web_search(request: &AnthropicMessagesRequest) -> bool {
-    request.tools.as_ref().is_some_and(|tools| {
-        tools.iter().any(|tool| {
-            tool.kind
-                .as_deref()
-                .is_some_and(|kind| kind.starts_with("web_search"))
-        })
-    })
 }
 
 /// Rewrites the request in place to recover from previously observed
@@ -719,6 +971,38 @@ mod tests {
             );
         }
         headers
+    }
+
+    #[tokio::test]
+    async fn context_length_rejection_uses_anthropic_prompt_too_long_shape() {
+        let state = state();
+        state.model_cache.update(vec![
+            json!({"modelId": "claude", "tokenLimits": {"maxInputTokens": 1000}}),
+        ]);
+        let request: AnthropicMessagesRequest = serde_json::from_value(json!({
+            "model": "claude", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap_or_else(|error| panic!("fixture request must deserialize: {error}"));
+        let input = token_input(&request).unwrap_or_else(|error| panic!("{error}"));
+        let error = GatewayError::Upstream {
+            status: 400,
+            info: Box::new(crate::error::enhance_kiro_error(&json!({
+                "message": "Input is too long.",
+                "reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"
+            }))),
+        };
+        assert!(error.is_context_length_exceeded());
+        let response = prompt_too_long_response(&state, &request, &input, &error);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap_or_default();
+        let body: Value = serde_json::from_slice(&body).unwrap_or_default();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            body["error"]["message"],
+            "prompt is too long: 1001 tokens > 1000 maximum"
+        );
     }
 
     #[test]

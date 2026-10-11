@@ -67,9 +67,15 @@ Same shape, with protocol-specific differences:
    `Authorization` header, in constant time — see
    `authentication_is_constant_time_shape_and_allows_optional_version` in
    `routes.rs`), rejects empty message lists, applies truncation recovery
-   (`apply_truncation_recovery`), and rejects requests using Anthropic's
-   native server-side web search (`has_native_web_search`) — Lanius does
-   not proxy that capability.
+   (`apply_truncation_recovery`). Requests offering Anthropic's server-side
+   web search tool (`web_search_20250305` etc.) are diverted to
+   `web_search_response`: `api::anthropic::web_search` swaps the server tool
+   for a plain `web_search` function tool, runs each search the model
+   requests through Kiro's remote MCP endpoint (`mcp::invoke_mcp`), and
+   loops until the model answers, returning Anthropic's `server_tool_use` /
+   `web_search_tool_result` blocks followed by the final answer. Streaming
+   clients get `message_start` and `ping`s while the loop runs, then the
+   whole turn at once.
 2. `prepare_request` converts via `convert::anthropic_to_kiro` and builds a
    `PreparedRequest` (payload + `RequestTokenInput` for fallback token
    estimation + the per-request `ToolNameAliases`).

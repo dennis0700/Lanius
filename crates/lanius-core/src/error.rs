@@ -110,6 +110,32 @@ impl GatewayError {
         }
     }
 
+    /// Returns `true` if this is Kiro's "conversation exceeds the model's
+    /// context window" rejection (`CONTENT_LENGTH_EXCEEDS_THRESHOLD`), which
+    /// API layers report in their protocol's native "prompt too long" shape so
+    /// clients can react (e.g. by compacting the conversation).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::GatewayError;
+    /// use lanius_core::error::enhance_kiro_error;
+    /// use serde_json::json;
+    ///
+    /// let err = GatewayError::Upstream {
+    ///     status: 400,
+    ///     info: Box::new(enhance_kiro_error(&json!({
+    ///         "message": "Input is too long.",
+    ///         "reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"
+    ///     }))),
+    /// };
+    /// assert!(err.is_context_length_exceeded());
+    /// ```
+    pub fn is_context_length_exceeded(&self) -> bool {
+        matches!(self, Self::Upstream { info, .. }
+            if info.reason == KiroErrorReason::ContentLengthExceedsThreshold.as_str())
+    }
+
     /// Returns the message that is safe and helpful to show to the end user.
     /// For [`GatewayError::Upstream`] and [`GatewayError::Network`] this is
     /// the classified, human-friendly message rather than raw upstream/error

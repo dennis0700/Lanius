@@ -194,7 +194,7 @@ impl AnthropicSseFormatter {
         Self {
             model: model.into(),
             model_cache,
-            input_tokens: request.estimate(false),
+            input_tokens: request.estimate(true),
             conversation_id: conversation_id.into(),
             truncation_store,
             started: false,
@@ -476,7 +476,11 @@ impl AnthropicSseFormatter {
         } else {
             "end_turn"
         };
+        // Report the final input token count again: `message_start` only had
+        // the local estimate, and clients (e.g. Claude Code's auto-compact)
+        // read `message_delta.usage.input_tokens` as the authoritative value.
         let mut usage = Map::new();
+        usage.insert("input_tokens".to_string(), json!(self.input_tokens));
         usage.insert("output_tokens".to_string(), json!(output_tokens));
         usage.extend(std::mem::take(&mut self.cache_usage));
         frames.push(format_sse_event(
@@ -669,7 +673,7 @@ pub fn response_from_stream_result(
     for tool in &mut result.tool_calls {
         tool.name = aliases.original_for(&tool.name);
     }
-    let mut input_tokens = request.estimate(false);
+    let mut input_tokens = request.estimate(true);
     let output_tokens = count_tokens(
         &format!("{}{}", result.content, result.thinking_content),
         false,
@@ -931,6 +935,42 @@ mod tests {
         );
         assert_eq!(response["stop_reason"], "max_tokens");
     }
+    #[test]
+    fn message_delta_reports_context_derived_input_tokens() {
+        let cache = ModelInfoCache::default();
+        cache.update(vec![
+            json!({"modelId": "claude", "tokenLimits": {"maxInputTokens": 100_000}}),
+        ]);
+        let mut formatter = AnthropicSseFormatter::new(
+            "claude",
+            cache,
+            RequestTokenInput {
+                messages: vec![json!({"role":"user","content":"hi"})],
+                tools: None,
+                system: None,
+            },
+            "conversation",
+            None,
+        );
+        formatter.start().unwrap_or_default();
+        formatter
+            .push(KiroEvent::content("done."))
+            .unwrap_or_default();
+        formatter
+            .push(KiroEvent::context_usage(Some(50.0)))
+            .unwrap_or_default();
+        let frames = formatter.finish().unwrap_or_default();
+        let delta = frames
+            .iter()
+            .find(|frame| frame.starts_with("event: message_delta"))
+            .and_then(|frame| frame.lines().find_map(|line| line.strip_prefix("data: ")))
+            .and_then(|data| serde_json::from_str::<Value>(data).ok())
+            .unwrap_or_default();
+        let input = delta["usage"]["input_tokens"].as_u64().unwrap_or_default();
+        let output = delta["usage"]["output_tokens"].as_u64().unwrap_or_default();
+        assert_eq!(input + output, 50_000);
+    }
+
     #[test]
     fn request_scoped_aliases_round_trip_anthropic_conversion_sse_and_collection() {
         let original = "mcp__plugin_everything_claude_code_github__create_pull_request_review";

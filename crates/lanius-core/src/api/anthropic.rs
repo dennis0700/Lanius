@@ -13,10 +13,13 @@
 //!   authentication, and truncation-recovery request rewriting.
 //! - [`sse`]: the streaming state machine that turns Kiro's internal event
 //!   stream into Anthropic SSE frames, plus non-streaming response assembly.
+//! - [`web_search`]: emulation of Anthropic's server-side web search tool via
+//!   Kiro's remote MCP `web_search`.
 
 mod models;
 mod routes;
 mod sse;
+mod web_search;
 
 pub use models::{
     AnthropicMessage, AnthropicMessageContent, AnthropicMessageRole, AnthropicMessagesRequest,

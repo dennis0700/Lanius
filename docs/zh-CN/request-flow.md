@@ -34,7 +34,7 @@
 
 整体结构相同，但存在协议特有的差异：
 
-1. **`api::anthropic::routes::messages`** 通过 `verify_headers` 校验 header（接受 `x-api-key` 或 Bearer `Authorization` header，并以常数时间比较，见 `routes.rs` 中的 `authentication_is_constant_time_shape_and_allows_optional_version`），拒绝空消息列表，应用截断恢复（`apply_truncation_recovery`），并拒绝使用 Anthropic 原生服务端 web search 的请求（`has_native_web_search`）：Lanius 不代理该能力。
+1. **`api::anthropic::routes::messages`** 通过 `verify_headers` 校验 header（接受 `x-api-key` 或 Bearer `Authorization` header，并以常数时间比较，见 `routes.rs` 中的 `authentication_is_constant_time_shape_and_allows_optional_version`），拒绝空消息列表，应用截断恢复（`apply_truncation_recovery`）。带有 Anthropic 服务端 web search 工具（`web_search_20250305` 等）的请求会转入 `web_search_response`：`api::anthropic::web_search` 把服务端工具替换成普通的 `web_search` 函数工具，模型每次请求搜索时通过 Kiro 远程 MCP 接口（`mcp::invoke_mcp`）执行，循环直到模型给出回答，返回 Anthropic 的 `server_tool_use` / `web_search_tool_result` 块和最终回答。流式客户端在循环期间先收到 `message_start` 和 `ping`，结束后一次性收到整轮内容。
 2. `prepare_request` 通过 `convert::anthropic_to_kiro` 进行转换，并构建一个 `PreparedRequest`（payload + 用于回退 token 估算的 `RequestTokenInput` + 每个请求独立的 `ToolNameAliases`）。
 3. **流式分支**：`stream_response` 驱动 `api::anthropic::sse::AnthropicSseFormatter`。这是一个有状态的状态机，按 Anthropic 规定的事件顺序输出（`message_start` -> 每个块的 `content_block_start/delta/stop` -> `message_delta` -> `message_stop`），并在等待较慢的上游输出时周期性地发送 `ping` 事件（`DEFAULT_PING_INTERVAL`）。
 4. **缓冲分支**：`response_from_stream_result`（位于 `api::anthropic::sse`）按 Anthropic 期望的固定顺序组装 `content` 数组（若存在 thinking 块则放在最前，然后是文本，最后是 tool-use 块），计算用量（若可用则优先使用 Kiro 的 context-usage 信号，见 `tokenizer.rs` 中的 `calculate_tokens_from_context_usage`），并选择 `stop_reason`（被截断时为 `max_tokens`，调用了任意工具时为 `tool_use`，否则为 `end_turn`）。
