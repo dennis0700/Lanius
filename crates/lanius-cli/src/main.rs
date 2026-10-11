@@ -24,6 +24,9 @@
 //! - `models [--json]` — list the models currently resolvable by this
 //!   gateway (see [`commands::models`]), including hidden/aliased names and
 //!   the Kiro credit-rate multiplier when known.
+//! - `mcp list | mcp call <name> [args-json] [--control-plane]` — send a raw
+//!   JSON-RPC request to Kiro's remote MCP endpoint and print the response
+//!   (see [`commands::mcp`]).
 //! - `update [--check] [-y] [--version <x.y.z>]` — check GitHub Releases for
 //!   a newer build and, unless `--check` is given, download and install it
 //!   in place (see [`commands::update`]).
@@ -118,6 +121,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Send a raw JSON-RPC request to Kiro's remote MCP endpoint and print the response
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+        /// Use the AWS control-plane host (q.<region>.amazonaws.com) instead of the runtime host
+        #[arg(long, global = true)]
+        control_plane: bool,
+    },
     /// Check for and install a newer `lanius` release from GitHub
     Update {
         /// Only report whether a newer version is available; don't install it
@@ -129,6 +140,21 @@ enum Command {
         /// Install a specific version instead of the latest (e.g. for rollback)
         #[arg(long = "version", value_name = "X.Y.Z")]
         pin_version: Option<String>,
+    },
+}
+
+/// Actions for the `mcp` subcommand.
+#[derive(Subcommand, Debug)]
+enum McpAction {
+    /// List the remote tools (`tools/list`)
+    List,
+    /// Call a remote tool (`tools/call`)
+    Call {
+        /// Tool name, e.g. `web_search`
+        name: String,
+        /// Tool arguments as a JSON object
+        #[arg(default_value = "{}")]
+        args: String,
     },
 }
 
@@ -158,6 +184,16 @@ fn main() -> Result<()> {
         }
         Some(Command::Usage { json }) => runtime()?.block_on(commands::usage(config, json)),
         Some(Command::Models { json }) => runtime()?.block_on(commands::models(config, json)),
+        Some(Command::Mcp {
+            action,
+            control_plane,
+        }) => {
+            let tool = match action {
+                McpAction::List => None,
+                McpAction::Call { name, args } => Some((name, args)),
+            };
+            runtime()?.block_on(commands::mcp(config, tool, control_plane))
+        }
         Some(Command::Update {
             check,
             yes,

@@ -9,12 +9,14 @@
 //! summarize a decoded [`lanius_core::upstream::KiroEvent`] stream.
 
 mod events;
+mod mcp;
 mod models;
 mod probe;
 mod replay;
 mod update;
 mod usage;
 
+pub(crate) use mcp::run as mcp;
 pub(crate) use models::run as models;
 pub(crate) use probe::run as probe;
 pub(crate) use replay::run as replay;

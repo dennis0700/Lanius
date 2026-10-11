@@ -49,6 +49,7 @@ pub mod compat;
 pub mod config;
 pub mod convert;
 pub mod error;
+pub mod mcp;
 pub mod model;
 pub mod server;
 pub mod tokenizer;
