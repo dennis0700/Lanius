@@ -82,7 +82,7 @@ Lanius 完全通过环境变量进行配置（如果工作目录中存在 `.env`
 |---|---|---|
 | `KIRO_REFRESH_URL_TEMPLATE` | `https://prod.{region}.auth.desktop.kiro.dev/refreshToken` | Kiro 桌面版 token 刷新 |
 | `AWS_SSO_OIDC_URL_TEMPLATE` | `https://oidc.{region}.amazonaws.com/token` | AWS SSO OIDC token 刷新 |
-| `KIRO_API_HOST_TEMPLATE` | `https://runtime.{region}.kiro.dev` | 聊天/补全请求（付费 runtime） |
-| `KIRO_Q_HOST_TEMPLATE` | `https://runtime.{region}.kiro.dev` | 模型列表、用量/账户查询（控制平面） |
+| `KIRO_API_HOST_TEMPLATE` | `https://runtime.{region}.kiro.dev` | 聊天和 `InvokeMCP`（web 搜索） |
+| `KIRO_MANAGEMENT_HOST_TEMPLATE` | `https://management.{region}.kiro.dev` | profile、模型列表、用量限制、`GetProfile` |
 
-它们通过 `Config::refresh_url()`、`Config::oidc_url()`、`Config::api_host()`、`Config::q_host()`、`Config::generate_assistant_response_url()` 和 `Config::list_available_models_url()` 对外提供。何时使用控制平面主机而非 runtime 主机的规则，参见 [compatibility.md](compatibility.md#主机改写)。
+它们通过 `Config::refresh_url()`、`Config::oidc_url()`、`Config::api_host()`、`Config::management_host()` 和 `Config::generate_assistant_response_url()` 对外提供。每个操作用哪个主机，参见 [compatibility.md](compatibility.md#kiro-主机)。

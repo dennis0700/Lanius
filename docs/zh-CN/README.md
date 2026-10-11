@@ -15,7 +15,7 @@ lanius-core`）的补充，从更高的层面说明各部分如何协同工作�
 | [conversion.md](conversion.md) | OpenAI/Anthropic ↔ Kiro payload 转换管线（`convert`） |
 | [auth.md](auth.md) | 凭据来源、token 刷新流程、profile ARN 自动获取、持久化 |
 | [streaming.md](streaming.md) | Kiro 的 AWS event-stream 封帧、增量解析器以及 SSE 重新编码 |
-| [compatibility.md](compatibility.md) | 客户端兼容性钩子：工具名别名、主机改写、模型 ID 格式化 |
+| [compatibility.md](compatibility.md) | 客户端兼容性钩子：工具名别名、Kiro 主机、模型 ID 格式化 |
 | [model-catalog.md](model-catalog.md) | 模型名称解析/规范化，以及原生 reasoning/thinking 支持 |
 | [truncation.md](truncation.md) | 检测并恢复上游 tool call/内容截断 |
 | [configuration.md](configuration.md) | 所有环境变量、默认值及其作用 |

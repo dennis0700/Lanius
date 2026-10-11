@@ -65,7 +65,7 @@
 
 ## Profile ARN 自动获取
 
-Kiro 的付费 “runtime” host 需要 profile ARN；没有 profile ARN 的 Builder ID 账户，其聊天请求也会回退到（免费的）control-plane host（见 [compatibility.md](compatibility.md#主机改写)）。如果没有配置 profile ARN，`AuthManager::autofetch_profile_arn` 会尝试通过调用 Kiro 的 `ListAvailableProfiles` control-plane API 来发现一个，每个进程生命周期内最多尝试一次（由 `compat::ProfileArnAutofetchHook::claim_fetch` 以原子方式占用这次尝试）。任何失败（网络错误、非 200、JSON 格式错误、响应中没有可用的 profile）都会以 `warn` 级别记录日志，除此之外被忽略。
+Kiro 的 runtime host 会拒绝不带 profile ARN 的聊天请求（`ValidationException: profileArn is required for this request`，见 [compatibility.md](compatibility.md#kiro-主机)）。如果没有配置 profile ARN，`AuthManager::autofetch_profile_arn` 会尝试通过调用 management host 上的 `ListAvailableProfiles` 来发现一个，每个进程生命周期内最多尝试一次（由 `compat::ProfileArnAutofetchHook::claim_fetch` 以原子方式占用这次尝试）。任何失败（网络错误、非 200、JSON 格式错误、响应中没有可用的 profile）都会以 `warn` 级别记录日志，除此之外被忽略。
 
 ## 区域解析
 

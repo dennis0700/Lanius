@@ -20,12 +20,6 @@
 //!   "claim" primitive and the raw HTTP request-shape helpers for discovering a Kiro
 //!   profile ARN. The actual HTTP call is issued by [`crate::auth::AuthManager`], which
 //!   reuses this type so the "only try once" logic isn't duplicated.
-//! - **Host rewriting** ([`control_plane_host`], [`chat_host`], `ControlPlaneHostHook`,
-//!   `ChatHostFallbackHook`) — some control-plane-only operations (listing models,
-//!   listing usage limits, MCP) must always go to the AWS `q.<region>.amazonaws.com` host
-//!   even when the account would otherwise use the paid `runtime.<region>.kiro.dev` host,
-//!   and profile-less accounts must always fall back to the control-plane host for chat
-//!   too, since the paid runtime host requires a profile ARN.
 //! - **Model ID formatting** (`ModelIdFormatHook`, [`rewrite_model_ids`],
 //!   [`is_claude_client`]) — Claude Code and similar clients expect model IDs with dashes
 //!   (`claude-sonnet-4-6`) rather than the dotted form Kiro's `/v1/models` endpoint returns
@@ -135,8 +129,6 @@ impl CompatibilityPipeline {
         pipeline
             .request_hooks
             .push(Box::new(ProfileArnAutofetchHook::default()));
-        pipeline.request_hooks.push(Box::new(ControlPlaneHostHook));
-        pipeline.request_hooks.push(Box::new(ChatHostFallbackHook));
         pipeline.response_hooks.push(Box::new(ModelIdFormatHook));
         pipeline
     }
@@ -784,7 +776,7 @@ impl ProfileArnAutofetchHook {
                 .attempted
                 .swap(true, std::sync::atomic::Ordering::AcqRel)
     }
-    /// The control-plane URL for the `ListAvailableProfiles` API in `region`.
+    /// The management-host URL for the `ListAvailableProfiles` API in `region`.
     ///
     /// # Examples
     ///
@@ -792,12 +784,15 @@ impl ProfileArnAutofetchHook {
     /// use lanius_core::compat::ProfileArnAutofetchHook;
     ///
     /// assert_eq!(
-    ///     ProfileArnAutofetchHook::profile_url("eu-west-1"),
-    ///     "https://q.eu-west-1.amazonaws.com/"
+    ///     ProfileArnAutofetchHook::profile_url("eu-central-1"),
+    ///     "https://management.eu-central-1.kiro.dev/"
     /// );
     /// ```
     pub fn profile_url(region: &str) -> String {
-        format!("https://q.{region}.amazonaws.com/")
+        format!(
+            "{}/",
+            crate::config::KIRO_MANAGEMENT_HOST_TEMPLATE.replace("{region}", region)
+        )
     }
     /// Builds the header set for a `ListAvailableProfiles` request: bearer auth using
     /// `token`, the AWS SDK-style target, and the Kiro CLI runtime-API user-agents.
@@ -820,11 +815,7 @@ impl ProfileArnAutofetchHook {
             (header::AUTHORIZATION, format!("Bearer {token}")),
             (
                 header::CONTENT_TYPE,
-                "application/json; charset=UTF-8".to_string(),
-            ),
-            (
-                HeaderName::from_static("content-encoding"),
-                "amz-1.0".to_string(),
+                "application/x-amz-json-1.0".to_string(),
             ),
             (
                 HeaderName::from_static("x-amz-target"),
@@ -837,7 +828,7 @@ impl ProfileArnAutofetchHook {
             ),
             (
                 HeaderName::from_static("x-amzn-codewhisperer-optout"),
-                "false".to_string(),
+                "true".to_string(),
             ),
         ];
         for (name, value) in entries {
@@ -884,85 +875,6 @@ impl ProfileArnAutofetchHook {
 impl RequestHook for ProfileArnAutofetchHook {
     fn name(&self) -> &'static str {
         "profile_arn_autofetch"
-    }
-    fn apply(&self, _request: &mut CompatRequest) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// Rewrites a `runtime.<region>.kiro.dev` host to its `q.<region>.amazonaws.com`
-/// control-plane equivalent; hosts that don't match that pattern are returned unchanged.
-///
-/// # Examples
-///
-/// ```
-/// use lanius_core::compat::control_plane_host;
-///
-/// assert_eq!(
-///     control_plane_host("https://runtime.eu-west-1.kiro.dev"),
-///     "https://q.eu-west-1.amazonaws.com"
-/// );
-/// ```
-pub fn control_plane_host(raw_host: &str) -> String {
-    runtime_to_q(raw_host).unwrap_or_else(|| raw_host.to_string())
-}
-/// Chooses the correct host for a chat/completion request: the paid runtime host requires
-/// a non-empty profile ARN, so profile-less requests are transparently routed to the
-/// control-plane host instead (see [`control_plane_host`]) rather than failing outright.
-///
-/// # Examples
-///
-/// ```
-/// use lanius_core::compat::chat_host;
-///
-/// let runtime = "https://runtime.eu-west-1.kiro.dev";
-/// assert_eq!(chat_host(runtime, Some("arn:aws:...")), runtime);
-/// assert_eq!(chat_host(runtime, None), "https://q.eu-west-1.amazonaws.com");
-/// ```
-pub fn chat_host(raw_host: &str, profile_arn: Option<&str>) -> String {
-    if profile_arn.is_none_or(str::is_empty) {
-        control_plane_host(raw_host)
-    } else {
-        raw_host.to_string()
-    }
-}
-fn runtime_to_q(raw_host: &str) -> Option<String> {
-    let trimmed = raw_host.strip_suffix('/').unwrap_or(raw_host);
-    let prefix = "https://runtime.";
-    let suffix = ".kiro.dev";
-    let region = trimmed.strip_prefix(prefix)?.strip_suffix(suffix)?;
-    (!region.is_empty() && !region.contains('/'))
-        .then(|| format!("https://q.{region}.amazonaws.com"))
-}
-/// Forces specific control-plane-only operations (`ListAvailableModels`,
-/// `GetUsageLimits`, and any `/mcp` path) to always target the AWS control-plane host,
-/// regardless of which host the request was otherwise going to use — these operations are
-/// not available on the paid runtime host at all.
-struct ControlPlaneHostHook;
-impl RequestHook for ControlPlaneHostHook {
-    fn name(&self) -> &'static str {
-        "control_plane_host"
-    }
-    fn apply(&self, request: &mut CompatRequest) -> Result<()> {
-        if request.path.contains("ListAvailableModels")
-            || request.path.contains("GetUsageLimits")
-            || request.path.ends_with("/mcp")
-        {
-            if let Some(url) = &mut request.upstream_url {
-                *url = control_plane_host(url);
-            }
-        }
-        Ok(())
-    }
-}
-/// Placeholder pipeline entry for the chat-host profile fallback. The real logic lives in
-/// [`chat_host`] and is invoked directly by [`crate::auth::AuthManager::api_host`] before
-/// this pipeline runs, so this hook is a no-op — kept for hook-name reporting parity, same
-/// rationale as [`ToolNameAliasHook`].
-struct ChatHostFallbackHook;
-impl RequestHook for ChatHostFallbackHook {
-    fn name(&self) -> &'static str {
-        "chat_host_fallback"
     }
     fn apply(&self, _request: &mut CompatRequest) -> Result<()> {
         Ok(())
@@ -1107,8 +1019,8 @@ mod tests {
         assert!(hook.claim_fetch(true, false));
         assert!(!hook.claim_fetch(true, false));
         assert_eq!(
-            ProfileArnAutofetchHook::profile_url("eu-west-1"),
-            "https://q.eu-west-1.amazonaws.com/"
+            ProfileArnAutofetchHook::profile_url("eu-central-1"),
+            "https://management.eu-central-1.kiro.dev/"
         );
         let headers = ProfileArnAutofetchHook::profile_headers("secret");
         assert_eq!(
@@ -1120,24 +1032,6 @@ mod tests {
                 &json!({"profiles":[{"profileArn":"arn"}]})
             ),
             Some("arn".into())
-        );
-    }
-
-    #[test]
-    fn host_hooks_keep_control_and_chat_decisions_separate() {
-        let runtime = "https://runtime.eu-west-1.kiro.dev";
-        assert_eq!(
-            control_plane_host(runtime),
-            "https://q.eu-west-1.amazonaws.com"
-        );
-        assert_eq!(
-            chat_host(runtime, None),
-            "https://q.eu-west-1.amazonaws.com"
-        );
-        assert_eq!(chat_host(runtime, Some("arn")), runtime);
-        assert_eq!(
-            control_plane_host("https://q.us-east-1.amazonaws.com"),
-            "https://q.us-east-1.amazonaws.com"
         );
     }
 

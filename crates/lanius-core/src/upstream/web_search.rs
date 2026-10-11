@@ -1,8 +1,8 @@
 //! Kiro's native `web_search` tool.
 //!
 //! Mirrors the Kiro CLI: a JSON-RPC `tools/call` request sent through the
-//! `AmazonCodeWhispererStreamingService.InvokeMCP` operation on the chat
-//! host. The tool's results arrive as a JSON document embedded in
+//! `AmazonCodeWhispererStreamingService.InvokeMCP` operation on the Kiro
+//! runtime host. The tool's results arrive as a JSON document embedded in
 //! `result.content[0].text`, which is expanded here into
 //! [`WebSearchResponse`]; the raw document is kept as well so it can be fed
 //! back to the model verbatim as a tool result.
@@ -114,14 +114,6 @@ pub struct WebSearchCall {
     pub outcome: std::result::Result<WebSearchResponse, WebSearchError>,
 }
 
-/// Where an MCP call is sent: the smithy `InvokeMCP` operation the Kiro CLI
-/// uses, or the legacy control-plane `/mcp` JSON-RPC endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum McpRoute {
-    InvokeMcp,
-    LegacyMcp,
-}
-
 impl KiroHttpClient {
     /// Whether the account's Kiro profile allows web tools.
     ///
@@ -179,8 +171,7 @@ impl KiroHttpClient {
 
     async fn fetch_web_tools_toggle(&self, arn: &str) -> Result<bool> {
         let auth = self.auth_manager();
-        let region = auth.region().await;
-        let url = format!("https://management.{region}.kiro.dev/");
+        let url = format!("{}/", auth.control_plane_host().await);
         let body = serde_json::to_vec(&json!({"profileArn": arn}))?;
         let token = auth.access_token_and_autofetch().await?;
         let mut request = self.client().post(url).body(body);
@@ -233,9 +224,8 @@ impl KiroHttpClient {
     /// Runs `query` through Kiro's native `web_search` MCP tool.
     ///
     /// Uses the `AmazonCodeWhispererStreamingService.InvokeMCP` operation on
-    /// the chat host, as the Kiro CLI does, falling back to the legacy
-    /// `q.<region>.amazonaws.com/mcp` endpoint if Kiro rejects that request
-    /// shape. Shares the chat client's retry policy: `403` forces a token
+    /// the Kiro runtime host, as the Kiro CLI does. Shares the chat client's
+    /// retry policy: `403` forces a token
     /// refresh, `429`/`5xx` and retryable transport errors back off
     /// exponentially.
     ///
@@ -263,53 +253,19 @@ impl KiroHttpClient {
                 "web search query is empty".into(),
             ));
         }
-        match self.call_mcp(McpRoute::InvokeMcp, query).await {
-            Err(GatewayError::Upstream { status, info }) if matches!(status, 400 | 404 | 405) => {
-                tracing::warn!(
-                    status,
-                    reason = %info.reason,
-                    "InvokeMCP rejected web_search; retrying via legacy /mcp endpoint"
-                );
-                self.call_mcp(McpRoute::LegacyMcp, query).await
-            }
-            other => other,
-        }
-    }
-
-    async fn call_mcp(&self, route: McpRoute, query: &str) -> Result<WebSearchResponse> {
         let auth = self.auth_manager();
         let profile_arn = auth.profile_arn().await.filter(|arn| !arn.is_empty());
-        let url = match route {
-            McpRoute::InvokeMcp => format!("{}/", auth.api_host().await),
-            McpRoute::LegacyMcp => format!("{}/mcp", auth.control_plane_host().await),
-        };
-        let body = serde_json::to_vec(&mcp_request(
-            query,
-            (route == McpRoute::InvokeMcp)
-                .then_some(profile_arn.as_deref())
-                .flatten(),
-        ))?;
+        let url = format!("{}/", auth.api_host().await);
+        let body = serde_json::to_vec(&mcp_request(query, profile_arn.as_deref()))?;
 
         let mut last_error = None;
         for attempt in 0..MAX_RETRIES {
             let token = auth.access_token_and_autofetch().await?;
             let mut request = self.client().post(&url).body(body.clone());
-            match route {
-                McpRoute::InvokeMcp => {
-                    for (name, value) in kiro_headers_for(&token, API_STREAMING) {
-                        request = request.header(name, value);
-                    }
-                    request = request.header("x-amz-target", INVOKE_MCP_TARGET);
-                }
-                McpRoute::LegacyMcp => {
-                    for (name, value) in kiro_headers_for(&token, API_RUNTIME) {
-                        request = request.header(name, value);
-                    }
-                    request = request
-                        .header(reqwest::header::CONTENT_TYPE, "application/json")
-                        .header(reqwest::header::ACCEPT, "*/*");
-                }
+            for (name, value) in kiro_headers_for(&token, API_STREAMING) {
+                request = request.header(name, value);
             }
+            request = request.header("x-amz-target", INVOKE_MCP_TARGET);
             if let Some(arn) = &profile_arn {
                 request = request.header("x-amzn-kiro-profile-arn", arn);
             }
@@ -368,9 +324,8 @@ impl KiroHttpClient {
     }
 }
 
-/// Builds the JSON-RPC `tools/call` envelope for the `web_search` tool. The
-/// `InvokeMCP` operation additionally carries the profile ARN in the body,
-/// matching the Kiro CLI.
+/// Builds the JSON-RPC `tools/call` envelope for the `web_search` tool,
+/// with the profile ARN in the body as the Kiro CLI sends it.
 fn mcp_request(query: &str, profile_arn: Option<&str>) -> Value {
     let mut request = json!({
         "id": format!("web_search_tooluse_{}", uuid::Uuid::new_v4().simple()),

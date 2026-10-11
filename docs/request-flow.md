@@ -133,9 +133,8 @@ sequenceDiagram
 ```
 
 - Search: `KiroHttpClient::web_search` sends JSON-RPC `tools/call` through
-  `AmazonCodeWhispererStreamingService.InvokeMCP` on the chat host, like the
-  Kiro CLI; on `400/404/405` it retries once via the legacy
-  `q.<region>.amazonaws.com/mcp` endpoint.
+  `AmazonCodeWhispererStreamingService.InvokeMCP` on the runtime host, like
+  the Kiro CLI.
 - Continuation: the current user turn moves into history, followed by an
   assistant turn with the round's text and `toolUses`; a new empty user turn
   carries `toolResults` with the raw result document as a `json` block.

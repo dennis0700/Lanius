@@ -66,9 +66,9 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 // Client identity mirrored from the official Kiro CLI (captured from
-// kiro-cli 2.24.0 request logs). Bump these together when Kiro raises its
+// kiro-cli 2.29.1 request logs). Bump these together when Kiro raises its
 // minimum supported client version.
-const KIRO_CLI_VERSION: &str = "2.24.0";
+const KIRO_CLI_VERSION: &str = "2.29.1";
 const AWS_SDK_RUST_VERSION: &str = "1.3.15";
 const RUST_VERSION: &str = "1.92.0";
 const KIRO_CLI_APP: &str = "app/AmazonQ-For-CLI";
@@ -77,6 +77,9 @@ const KIRO_CLI_APP: &str = "app/AmazonQ-For-CLI";
 pub const API_STREAMING: &str = "codewhispererstreaming/0.1.17975";
 /// Smithy service identifier for the non-streaming runtime API (profiles, models, usage).
 pub const API_RUNTIME: &str = "codewhispererruntime/0.1.17975";
+/// Smithy service identifier for the Kiro control-plane API
+/// (`KiroControlPlaneBearerService`, e.g. `ListAvailableModels`).
+pub const API_CONTROL_PLANE_BEARER: &str = "kirocontrolplanebearer/0.1.0";
 /// Smithy service identifier for the AWS SSO OIDC token API.
 pub const API_SSO_OIDC: &str = "ssooidc/1.100.0";
 
@@ -176,10 +179,34 @@ pub fn kiro_headers_for(token: &str, api: &str) -> Vec<(&'static str, String)> {
         ("Content-Type", "application/x-amz-json-1.0".to_string()),
         ("User-Agent", kiro_user_agent(api)),
         ("x-amz-user-agent", kiro_amz_user_agent(api)),
-        ("x-amzn-codewhisperer-optout", "false".to_string()),
+        // The Kiro CLI sends `true` unless the user opted in to sharing
+        // content with AWS (`codeWhisperer.shareCodeWhispererContentWithAWS`).
+        ("x-amzn-codewhisperer-optout", "true".to_string()),
         ("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string()),
         ("amz-sdk-request", "attempt=1; max=3".to_string()),
     ]
+}
+
+/// Appends `pairs` to `base` as a URL-encoded query string, as the Kiro CLI
+/// sends control-plane inputs.
+///
+/// # Examples
+///
+/// ```
+/// let url = lanius_core::utils::with_query("https://h/", &[("origin", "KIRO_CLI")]);
+/// assert_eq!(url, "https://h/?origin=KIRO_CLI");
+/// ```
+pub fn with_query(base: &str, pairs: &[(&str, &str)]) -> String {
+    let query = pairs
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencoding::encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    if query.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{query}")
+    }
 }
 
 /// Builds the full set of headers for a Kiro `GenerateAssistantResponse`
@@ -443,7 +470,7 @@ mod tests {
             kiro_user_agent(API_STREAMING),
             format!(
                 "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17975 os/{os} \
-                 lang/rust/1.92.0 md/appVersion-2.24.0 app/AmazonQ-For-CLI"
+                 lang/rust/1.92.0 md/appVersion-2.29.1 app/AmazonQ-For-CLI"
             )
         );
         assert_eq!(

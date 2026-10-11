@@ -20,8 +20,6 @@ pub trait RequestHook: Send + Sync {
 |---|---|---|
 | 1 | `ToolNameAliasHook` | placeholder — real logic lives in `ToolNameAliases`, invoked directly from `convert` |
 | 2 | `ProfileArnAutofetchHook` | placeholder — real logic invoked directly from `auth::AuthManager` |
-| 3 | `ControlPlaneHostHook` | rewrites control-plane-only paths to the AWS host |
-| 4 | `ChatHostFallbackHook` | placeholder — real logic invoked directly from `auth::AuthManager::api_host` |
 | — | `ModelIdFormatHook` (response) | rewrites `/v1/models` ids for Claude-branded clients |
 
 Request hooks run in registration order; response hooks run in *reverse*
@@ -64,23 +62,21 @@ Restoration happens on the way back out, in three places:
 See [streaming.md](streaming.md#tool-name-restoration) for where this is
 invoked in the response pipeline.
 
-## Host rewriting
+## Kiro hosts
 
-Kiro exposes two conceptually different hosts, both currently resolving to
-the same `runtime.<region>.kiro.dev` template but kept distinct because
-they may diverge and because the *rule* for choosing between them differs
-per operation:
+Lanius talks to the same two Kiro service hosts as Kiro CLI 2.29.1, both on
+Kiro's [firewall allowlist](https://kiro.dev/docs/privacy-and-security/firewalls/):
 
-- **Control-plane host** (`KIRO_Q_HOST_TEMPLATE`) — model listing, usage
-  limits, MCP-related control operations. Always used for these
-  operations, unconditionally, via `compat::control_plane_host` /
-  `ControlPlaneHostHook`.
-- **Chat/runtime host** (`KIRO_API_HOST_TEMPLATE`) — the paid runtime used
-  for `generateAssistantResponse`. Requires a profile ARN; accounts without
-  one (e.g. Builder ID / free accounts) are routed to the control-plane
-  host instead for chat too, since the paid runtime host would reject them.
-  This fallback is implemented by `compat::chat_host` and invoked directly
-  from `auth::AuthManager::api_host`.
+- **Runtime host** (`KIRO_API_HOST_TEMPLATE`, `runtime.<region>.kiro.dev`):
+  `GenerateAssistantResponse` and `InvokeMCP`. Requests must carry a
+  profile ARN.
+- **Management host** (`KIRO_MANAGEMENT_HOST_TEMPLATE`,
+  `management.<region>.kiro.dev`): `ListAvailableProfiles`,
+  `ListAvailableModels`, `GetUsageLimits` and `GetProfile`.
+
+Kiro marks the older `q.<region>.amazonaws.com` host as legacy (the Kiro CLI
+now only sends telemetry there), so Lanius no longer uses it. There is no
+client-side endpoint rotation: retries and backoff go to the same host.
 
 ## Model ID formatting
 

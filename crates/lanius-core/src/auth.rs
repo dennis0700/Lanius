@@ -17,8 +17,7 @@
 //! Downstream, [`crate::server`] and the `api::*` request handlers call
 //! [`AuthManager::access_token`] / [`AuthManager::access_token_and_autofetch`] to obtain a
 //! bearer token before proxying a request upstream, and [`AuthManager::api_host`] /
-//! [`AuthManager::control_plane_host`] (which delegate to [`crate::compat`]'s host-rewrite
-//! hooks) to decide which Kiro/AWS endpoint to call. [`crate::compat::ProfileArnAutofetchHook`]
+//! [`AuthManager::control_plane_host`] to pick the Kiro runtime or management host. [`crate::compat::ProfileArnAutofetchHook`]
 //! is reused here (rather than duplicated) so the "fetch a profile ARN at most once" logic
 //! has a single implementation.
 //!
@@ -38,7 +37,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use tokio::sync::Mutex;
 
-use crate::compat::{self, ProfileArnAutofetchHook};
+use crate::compat::ProfileArnAutofetchHook;
 use crate::config::{Config, TOKEN_REFRESH_THRESHOLD};
 use crate::error::{GatewayError, Result};
 use crate::utils::machine_fingerprint;
@@ -305,7 +304,7 @@ impl AuthManager {
                 .clone()
                 .unwrap_or_else(|| state.region.clone())
         };
-        let body = br#"{"nextToken": null}"#.to_vec();
+        let body = br#"{}"#.to_vec();
         let headers = ProfileArnAutofetchHook::profile_headers(token);
         let url = ProfileArnAutofetchHook::profile_url(&region);
         let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
@@ -431,9 +430,8 @@ impl AuthManager {
         self.state.lock().await.auth_type
     }
 
-    /// Returns the fully-resolved chat/runtime API host for the current region and
-    /// profile, applying [`compat::chat_host`]'s fallback rule (profile-less requests are
-    /// routed to the control-plane host instead of the paid runtime host).
+    /// Returns the Kiro runtime host (`runtime.<region>.kiro.dev`) used for chat and
+    /// `InvokeMCP` requests.
     ///
     /// # Examples
     ///
@@ -449,13 +447,11 @@ impl AuthManager {
     /// ```
     pub async fn api_host(&self) -> String {
         let region = self.region().await;
-        let raw = crate::config::KIRO_API_HOST_TEMPLATE.replace("{region}", &region);
-        compat::chat_host(&raw, self.profile_arn().await.as_deref())
+        crate::config::KIRO_API_HOST_TEMPLATE.replace("{region}", &region)
     }
 
-    /// Returns the control-plane (AWS `q.<region>.amazonaws.com`) host for the current
-    /// region, used for account/profile-management calls that are never routed through the
-    /// paid runtime host.
+    /// Returns the Kiro management host (`management.<region>.kiro.dev`) used for
+    /// control-plane calls: profiles, model listing, usage limits and `GetProfile`.
     ///
     /// # Examples
     ///
@@ -466,13 +462,12 @@ impl AuthManager {
     /// # async fn example() {
     /// let manager = AuthManager::new(Config::default()).expect("valid config");
     /// let host = manager.control_plane_host().await;
-    /// assert!(host.contains("amazonaws.com"));
+    /// assert!(host.starts_with("https://management."));
     /// # }
     /// ```
     pub async fn control_plane_host(&self) -> String {
         let region = self.region().await;
-        let raw = crate::config::KIRO_Q_HOST_TEMPLATE.replace("{region}", &region);
-        compat::control_plane_host(&raw)
+        crate::config::KIRO_MANAGEMENT_HOST_TEMPLATE.replace("{region}", &region)
     }
 
     /// Performs one refresh attempt while the state lock is held, with a single retry path:
@@ -1037,7 +1032,7 @@ mod tests {
 
         assert_eq!(
             ProfileArnAutofetchHook::profile_url("us-east-1"),
-            "https://q.us-east-1.amazonaws.com/"
+            "https://management.us-east-1.kiro.dev/"
         );
 
         let headers = ProfileArnAutofetchHook::profile_headers("access-token");
@@ -1075,26 +1070,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_hooks_fall_back_for_profileless_chat_and_keep_control_plane_separate() {
-        let profileless = AuthManager::new(Config::default())
+    async fn hosts_are_kiro_runtime_and_management_regardless_of_profile() {
+        for profile_arn in [None, Some("arn:paid".to_string())] {
+            let auth = AuthManager::new(Config {
+                profile_arn,
+                ..Config::default()
+            })
             .unwrap_or_else(|error| panic!("auth must initialize: {error}"));
-        assert_eq!(
-            profileless.api_host().await,
-            "https://q.us-east-1.amazonaws.com"
-        );
-        assert_eq!(
-            profileless.control_plane_host().await,
-            "https://q.us-east-1.amazonaws.com"
-        );
-        let paid = AuthManager::new(Config {
-            profile_arn: Some("arn:paid".into()),
-            ..Config::default()
-        })
-        .unwrap_or_else(|error| panic!("auth must initialize: {error}"));
-        assert_eq!(paid.api_host().await, "https://runtime.us-east-1.kiro.dev");
-        assert_eq!(
-            paid.control_plane_host().await,
-            "https://q.us-east-1.amazonaws.com"
-        );
+            assert_eq!(auth.api_host().await, "https://runtime.us-east-1.kiro.dev");
+            assert_eq!(
+                auth.control_plane_host().await,
+                "https://management.us-east-1.kiro.dev"
+            );
+        }
     }
 }

@@ -378,40 +378,40 @@ pub fn to_runtime_model_id(normalized: &str) -> String {
 /// # }
 /// ```
 pub async fn fetch_available_models(auth: Arc<AuthManager>, config: &Config) -> Option<Vec<Value>> {
+    // Mirrors the Kiro CLI: the inputs go both in the query string and the
+    // body. The control plane rejects requests without a profile ARN
+    // whenever one exists for the account.
     let mut payload = serde_json::Map::new();
     payload.insert(
         "origin".to_owned(),
         Value::String(crate::utils::KIRO_ORIGIN.to_owned()),
     );
-    // Kiro CLI traffic is served by the Kiro control plane, which rejects
-    // requests without a profile ARN whenever one exists for the account.
-    if let Some(profile_arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
-        payload.insert("profileArn".to_owned(), Value::String(profile_arn));
+    let profile_arn = auth.profile_arn().await.filter(|arn| !arn.is_empty());
+    let mut query = vec![("origin", crate::utils::KIRO_ORIGIN)];
+    if let Some(arn) = &profile_arn {
+        query.push(("profileArn", arn.as_str()));
+        payload.insert("profileArn".to_owned(), Value::String(arn.clone()));
     }
     let body = serde_json::to_vec(&Value::Object(payload)).ok()?;
 
     let token = auth.access_token().await.ok()?;
     let client = KiroHttpClient::new(auth.clone(), config).ok()?;
     let mut headers = reqwest::header::HeaderMap::new();
-    for (name, value) in crate::utils::kiro_headers_for(&token, crate::utils::API_RUNTIME) {
+    for (name, value) in
+        crate::utils::kiro_headers_for(&token, crate::utils::API_CONTROL_PLANE_BEARER)
+    {
         if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
             headers.insert(name, value);
         }
     }
     headers.insert(
         "x-amz-target",
-        reqwest::header::HeaderValue::from_static("AmazonCodeWhispererService.ListAvailableModels"),
-    );
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/json; charset=UTF-8"),
-    );
-    headers.insert(
-        reqwest::header::CONTENT_ENCODING,
-        reqwest::header::HeaderValue::from_static("amz-1.0"),
+        reqwest::header::HeaderValue::from_static(
+            "KiroControlPlaneBearerService.ListAvailableModels",
+        ),
     );
 
-    let url = auth.control_plane_host().await;
+    let url = crate::utils::with_query(&format!("{}/", auth.control_plane_host().await), &query);
     let mut request = client.client().post(url).body(body);
     for (name, value) in &headers {
         request = request.header(name, value);

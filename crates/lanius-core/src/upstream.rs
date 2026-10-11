@@ -11,7 +11,6 @@
 //! responses.
 
 mod client;
-mod endpoint;
 mod parser;
 mod stream;
 mod web_search;

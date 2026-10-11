@@ -98,12 +98,11 @@ in `config.rs`:
 |---|---|---|
 | `KIRO_REFRESH_URL_TEMPLATE` | `https://prod.{region}.auth.desktop.kiro.dev/refreshToken` | Kiro desktop token refresh |
 | `AWS_SSO_OIDC_URL_TEMPLATE` | `https://oidc.{region}.amazonaws.com/token` | AWS SSO OIDC token refresh |
-| `KIRO_API_HOST_TEMPLATE` | `https://runtime.{region}.kiro.dev` | Chat/completion requests (paid runtime) |
-| `KIRO_Q_HOST_TEMPLATE` | `https://runtime.{region}.kiro.dev` | Model listing, usage/account queries (control plane) |
+| `KIRO_API_HOST_TEMPLATE` | `https://runtime.{region}.kiro.dev` | Chat and `InvokeMCP` (web search) |
+| `KIRO_MANAGEMENT_HOST_TEMPLATE` | `https://management.{region}.kiro.dev` | Profiles, model listing, usage limits, `GetProfile` |
 
 These are exposed as `Config::refresh_url()`, `Config::oidc_url()`,
-`Config::api_host()`, `Config::q_host()`,
-`Config::generate_assistant_response_url()`, and
-`Config::list_available_models_url()`. See
-[compatibility.md](compatibility.md#host-rewriting) for the rules around
-when the control-plane host is used instead of the runtime host.
+`Config::api_host()`, `Config::management_host()` and
+`Config::generate_assistant_response_url()`. See
+[compatibility.md](compatibility.md#kiro-hosts) for which operation uses
+which host.

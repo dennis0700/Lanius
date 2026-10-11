@@ -27,9 +27,10 @@ pub const AWS_SSO_OIDC_URL_TEMPLATE: &str = "https://oidc.{region}.amazonaws.com
 /// used to send chat/completion requests.
 pub const KIRO_API_HOST_TEMPLATE: &str = "https://runtime.{region}.kiro.dev";
 
-/// URL template (with a `{region}` placeholder) for the Kiro control-plane
-/// host used for model listing and account/usage queries.
-pub const KIRO_Q_HOST_TEMPLATE: &str = "https://runtime.{region}.kiro.dev";
+/// URL template (with a `{region}` placeholder) for the Kiro management
+/// (control-plane) host used for profiles, model listing, usage limits and
+/// policy lookups.
+pub const KIRO_MANAGEMENT_HOST_TEMPLATE: &str = "https://management.{region}.kiro.dev";
 
 /// How far ahead of expiry an access token is proactively refreshed.
 pub const TOKEN_REFRESH_THRESHOLD: Duration = Duration::from_secs(600);
@@ -378,7 +379,7 @@ impl Config {
         KIRO_API_HOST_TEMPLATE.replace("{region}", &self.region)
     }
 
-    /// Renders [`KIRO_Q_HOST_TEMPLATE`] for this config's region.
+    /// Renders [`KIRO_MANAGEMENT_HOST_TEMPLATE`] for this config's region.
     ///
     /// # Examples
     ///
@@ -386,10 +387,10 @@ impl Config {
     /// use lanius_core::Config;
     ///
     /// let cfg = Config { region: "eu-central-1".into(), ..Default::default() };
-    /// assert_eq!(cfg.q_host(), "https://runtime.eu-central-1.kiro.dev");
+    /// assert_eq!(cfg.management_host(), "https://management.eu-central-1.kiro.dev");
     /// ```
-    pub fn q_host(&self) -> String {
-        KIRO_Q_HOST_TEMPLATE.replace("{region}", &self.region)
+    pub fn management_host(&self) -> String {
+        KIRO_MANAGEMENT_HOST_TEMPLATE.replace("{region}", &self.region)
     }
 
     /// Full URL of the Kiro chat/completion endpoint used to send converted
@@ -403,28 +404,11 @@ impl Config {
     /// let cfg = Config { region: "eu-central-1".into(), ..Default::default() };
     /// assert_eq!(
     ///     cfg.generate_assistant_response_url(),
-    ///     "https://runtime.eu-central-1.kiro.dev/generateAssistantResponse"
+    ///     "https://runtime.eu-central-1.kiro.dev/"
     /// );
     /// ```
     pub fn generate_assistant_response_url(&self) -> String {
-        format!("{}/generateAssistantResponse", self.api_host())
-    }
-
-    /// Full URL of the Kiro model-catalog listing endpoint.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use lanius_core::Config;
-    ///
-    /// let cfg = Config { region: "eu-central-1".into(), ..Default::default() };
-    /// assert_eq!(
-    ///     cfg.list_available_models_url(),
-    ///     "https://runtime.eu-central-1.kiro.dev/ListAvailableModels"
-    /// );
-    /// ```
-    pub fn list_available_models_url(&self) -> String {
-        format!("{}/ListAvailableModels", self.q_host())
+        format!("{}/", self.api_host())
     }
 
     /// Validates invariants that must hold before the server starts serving
@@ -540,7 +524,7 @@ mod tests {
         assert_eq!(cfg.api_host(), "https://runtime.eu-central-1.kiro.dev");
         assert_eq!(
             cfg.generate_assistant_response_url(),
-            "https://runtime.eu-central-1.kiro.dev/generateAssistantResponse"
+            "https://runtime.eu-central-1.kiro.dev/"
         );
     }
 

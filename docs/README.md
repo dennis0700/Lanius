@@ -16,7 +16,7 @@ then drill into the topic that matches what you're working on:
 | [conversion.md](conversion.md) | The OpenAI/Anthropic ↔ Kiro payload conversion pipeline (`convert`) |
 | [auth.md](auth.md) | Credential sources, token refresh flows, profile ARN autofetch, persistence |
 | [streaming.md](streaming.md) | Kiro's AWS event-stream framing, the incremental parser, and SSE re-encoding |
-| [compatibility.md](compatibility.md) | Client-compatibility hooks: tool-name aliasing, host rewriting, model-id formatting |
+| [compatibility.md](compatibility.md) | Client-compatibility hooks: tool-name aliasing, Kiro hosts, model-id formatting |
 | [model-catalog.md](model-catalog.md) | Model name resolution/normalization and native reasoning/thinking support |
 | [truncation.md](truncation.md) | Detecting and recovering from upstream tool-call/content truncation |
 | [configuration.md](configuration.md) | Every environment variable, its default, and what it controls |

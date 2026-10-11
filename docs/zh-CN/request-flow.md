@@ -64,7 +64,7 @@ sequenceDiagram
     L-->>C: 回答（Anthropic 额外带 server_tool_use / web_search_tool_result）
 ```
 
-- 搜索：`KiroHttpClient::web_search` 和 Kiro CLI 一样，通过 chat 主机上的 `AmazonCodeWhispererStreamingService.InvokeMCP` 发送 JSON-RPC `tools/call`；遇到 `400/404/405` 时改走旧的 `q.<region>.amazonaws.com/mcp` 端点重试一次。
+- 搜索：`KiroHttpClient::web_search` 和 Kiro CLI 一样，通过 runtime 主机上的 `AmazonCodeWhispererStreamingService.InvokeMCP` 发送 JSON-RPC `tools/call`。
 - 续写：当前 user 轮移入 history，后面接一个带本轮文本和 `toolUses` 的 assistant 轮；新的空 user 轮在 `toolResults` 里以 `json` 块携带原始结果文档。
 - 某一轮同时调用了客户端工具时循环结束，这些调用交给客户端，该轮的 `web_search` 调用被丢弃。超出次数上限的调用会得到 `max_uses_exceeded` 错误结果，循环在之后一轮结束。搜索失败以错误结果告诉模型，不会让整个请求失败。
 - 企业策略：Kiro 不会在 `InvokeMCP` 上执行 console 里的 "Web search and web fetch tools" 开关，所以 Lanius 像 Kiro CLI 一样自己执行。有 profile ARN 的账号会读取 `GetProfile`（`management.<region>.kiro.dev`），`optInFeatures.webTools.toggle == "OFF"` 时不提供搜索工具，Claude Code 的 WebSearch 子请求返回 `403 permission_error`。字段缺失或查询失败时保持开启。结果缓存 5 分钟。

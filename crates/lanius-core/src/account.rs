@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::auth::AuthManager;
 use crate::error::{GatewayError, Result, enhance_kiro_error};
 use crate::upstream::KiroHttpClient;
-use crate::utils::{API_RUNTIME, KIRO_ORIGIN, kiro_headers_for};
+use crate::utils::{API_RUNTIME, KIRO_ORIGIN, kiro_headers_for, with_query};
 
 /// Fetches raw usage-limits data from Kiro's control plane using the
 /// configured account's auth.
@@ -39,10 +39,16 @@ use crate::utils::{API_RUNTIME, KIRO_ORIGIN, kiro_headers_for};
 pub async fn fetch_usage(auth: &AuthManager, http_client: &KiroHttpClient) -> Result<Value> {
     let token = auth.access_token_and_autofetch().await?;
     let mut payload = json!({"origin":KIRO_ORIGIN,"isEmailRequired":true});
-    // The Kiro control plane requires the profile ARN for CLI-identified requests.
-    if let Some(profile_arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
-        payload["profileArn"] = Value::String(profile_arn);
+    // Mirrors the Kiro CLI: the inputs go both in the query string and the
+    // body. The control plane requires the profile ARN for CLI-identified
+    // requests.
+    let profile_arn = auth.profile_arn().await.filter(|arn| !arn.is_empty());
+    let mut query = Vec::with_capacity(2);
+    if let Some(arn) = &profile_arn {
+        query.push(("profileArn", arn.as_str()));
+        payload["profileArn"] = Value::String(arn.clone());
     }
+    query.push(("origin", KIRO_ORIGIN));
     let body = serde_json::to_vec(&payload)?;
     let mut headers = reqwest::header::HeaderMap::new();
     for (name, value) in kiro_headers_for(&token, API_RUNTIME) {
@@ -52,15 +58,9 @@ pub async fn fetch_usage(auth: &AuthManager, http_client: &KiroHttpClient) -> Re
     }
     headers.insert(
         "x-amz-target",
-        reqwest::header::HeaderValue::from_static(
-            "com.amazon.aws.codewhisperer.runtime.AmazonCodeWhispererService.GetUsageLimits",
-        ),
+        reqwest::header::HeaderValue::from_static("AmazonCodeWhispererService.GetUsageLimits"),
     );
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/x-amz-json-1.0"),
-    );
-    let url = auth.control_plane_host().await;
+    let url = with_query(&format!("{}/", auth.control_plane_host().await), &query);
     let mut request = http_client.client().post(url).body(body);
     for (name, value) in &headers {
         request = request.header(name, value);

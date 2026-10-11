@@ -127,14 +127,13 @@ perfectly valid, freshly refreshed token.
 
 ## Profile ARN autofetch
 
-Kiro's paid "runtime" host requires a profile ARN; Builder ID accounts
-without one otherwise fall back to the (unpaid) control-plane host for chat
-too (see [compatibility.md](compatibility.md#host-rewriting)). If no
-profile ARN is configured, `AuthManager::autofetch_profile_arn` tries, at
-most once per process lifetime
-(`compat::ProfileArnAutofetchHook::claim_fetch` atomically claims the
-attempt), to discover one by calling Kiro's `ListAvailableProfiles`
-control-plane API. Any failure (network, non-200, malformed JSON, no usable
+Kiro's runtime host rejects chat requests without a profile ARN
+(`ValidationException: profileArn is required for this request`; see
+[compatibility.md](compatibility.md#kiro-hosts)). If no profile ARN is
+configured, `AuthManager::autofetch_profile_arn` tries, at most once per
+process lifetime (`compat::ProfileArnAutofetchHook::claim_fetch` atomically
+claims the attempt), to discover one by calling `ListAvailableProfiles` on
+the management host. Any failure (network, non-200, malformed JSON, no usable
 profile in the response) is logged at `warn` and otherwise ignored.
 
 ## Region resolution

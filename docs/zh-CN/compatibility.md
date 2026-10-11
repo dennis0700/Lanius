@@ -18,8 +18,6 @@ pub trait RequestHook: Send + Sync {
 |---|---|---|
 | 1 | `ToolNameAliasHook` | 占位符：实际逻辑位于 `ToolNameAliases`，由 `convert` 直接调用 |
 | 2 | `ProfileArnAutofetchHook` | 占位符：实际逻辑由 `auth::AuthManager` 直接调用 |
-| 3 | `ControlPlaneHostHook` | 把仅限 control plane 的路径改写到 AWS 主机 |
-| 4 | `ChatHostFallbackHook` | 占位符：实际逻辑由 `auth::AuthManager::api_host` 直接调用 |
 | — | `ModelIdFormatHook`（响应） | 为 Claude 品牌客户端改写 `/v1/models` 中的 id |
 
 请求 hook 按注册顺序执行；响应 hook 按注册顺序的*逆序*执行，即最后注册的响应 hook 最先执行，这与请求管道从外到内层层包裹的直觉相对应。有几个 hook 在管道本身中只是空操作的占位符（它们的实际逻辑由 `convert`/`auth` 直接调用，因为那些调用点掌握着通用管道所没有的信息），但它们仍保留在这里，以便 `request_hook_names`/`response_hook_names` 能准确报告哪些兼容性行为处于启用状态，用于诊断。
@@ -38,12 +36,14 @@ Kiro 将 `toolSpecification.name` 限制为最多 64 个 ASCII 字母数字/`_`/
 
 它在响应管道中的调用位置参见 [streaming.md](streaming.md#工具名还原)。
 
-## 主机改写
+## Kiro 主机
 
-Kiro 暴露了两个概念上不同的主机。它们目前都解析为同一个 `runtime.<region>.kiro.dev` 模板，但仍被区分开，因为二者将来可能分化，而且在不同操作中选择二者的*规则*也不同：
+Lanius 使用的 Kiro 服务主机与 Kiro CLI 2.29.1 相同，两者都在 Kiro 的[防火墙白名单](https://kiro.dev/docs/privacy-and-security/firewalls/)上：
 
-- **Control-plane 主机**（`KIRO_Q_HOST_TEMPLATE`）：用于模型列表、用量限制、MCP 相关的控制操作。这些操作始终无条件地使用它，通过 `compat::control_plane_host` / `ControlPlaneHostHook` 实现。
-- **Chat/runtime 主机**（`KIRO_API_HOST_TEMPLATE`）：用于 `generateAssistantResponse` 的付费 runtime。它要求 profile ARN；没有 profile ARN 的账户（例如 Builder ID / 免费账户）在聊天时也会被路由到 control-plane 主机，因为付费 runtime 主机会拒绝它们。这个回退由 `compat::chat_host` 实现，并由 `auth::AuthManager::api_host` 直接调用。
+- **Runtime 主机**（`KIRO_API_HOST_TEMPLATE`，`runtime.<region>.kiro.dev`）：`GenerateAssistantResponse` 和 `InvokeMCP`。请求必须带 profile ARN。
+- **Management 主机**（`KIRO_MANAGEMENT_HOST_TEMPLATE`，`management.<region>.kiro.dev`）：`ListAvailableProfiles`、`ListAvailableModels`、`GetUsageLimits` 和 `GetProfile`。
+
+Kiro 已把旧的 `q.<region>.amazonaws.com` 主机标为 legacy（Kiro CLI 现在只往那里发遥测），所以 Lanius 不再使用它。客户端不做端点轮换，重试和退避都发往同一个主机。
 
 ## 模型 ID 格式化
 
