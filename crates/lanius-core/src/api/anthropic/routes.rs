@@ -22,7 +22,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use bytes::Bytes;
-use futures_util::{StreamExt, stream};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 use super::models::{
@@ -31,9 +31,14 @@ use super::models::{
     TextContentBlock, ToolResultContent,
 };
 use super::sse::{
-    AnthropicSseFormatter, DEFAULT_PING_INTERVAL, RequestTokenInput, response_from_stream_result,
+    AnthropicSseFormatter, DEFAULT_PING_INTERVAL, RequestTokenInput, response_with_searches,
+};
+use super::web_search::{
+    WebSearchAnswer, extract_query, is_search_subrequest, is_web_search_tool, replace_server_tool,
+    strip_server_tool,
 };
 use crate::api::ErrorDetail;
+use crate::api::search_loop::{ByteStream, LoopEvent, SearchLoop, collect, open_chat_stream};
 use crate::auth::AuthManager;
 use crate::compat::ToolNameAliases;
 use crate::config::Config;
@@ -44,7 +49,7 @@ use crate::tokenizer::estimate_request_tokens;
 use crate::truncation::{
     TruncationStore, generate_truncation_user_message, prepend_tool_recovery_notice,
 };
-use crate::upstream::{KiroHttpClient, collect_stream_to_result, parse_kiro_stream};
+use crate::upstream::KiroHttpClient;
 use crate::utils::{HashableMessage, generate_conversation_id};
 
 /// Shared axum state for the Anthropic routes: gateway config, the shared
@@ -81,8 +86,9 @@ pub fn router() -> Router<AnthropicState> {
 /// Handles `POST /v1/messages`.
 ///
 /// Validates the API key and non-empty message list, applies truncation
-/// recovery rewrites, rejects requests that request native (server-side)
-/// web search (not yet supported by this gateway), estimates request
+/// recovery rewrites, answers WebSearch sub-requests (only server
+/// `web_search` tools offered) from Kiro's native MCP search and drops
+/// server `web_search` tools mixed with client tools, estimates request
 /// tokens, prepares the upstream connection, then either streams an SSE
 /// response or collects and returns a single JSON response depending on
 /// `request.stream`.
@@ -99,13 +105,23 @@ async fn messages(
     }
     apply_truncation_recovery(&mut request, &state.truncation_store, &state.config);
 
-    if has_native_web_search(&request) {
-        return error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            "api_error",
-            "Native web_search MCP bypass is not yet available in this Rust implementation",
-        );
+    let web_tools_allowed = request
+        .tools
+        .as_deref()
+        .is_some_and(|tools| tools.iter().any(is_web_search_tool))
+        && web_tools_allowed(&state).await;
+    if is_search_subrequest(&request) {
+        if !web_tools_allowed {
+            return web_tools_disabled_response();
+        }
+        return native_web_search(&state, &request).await;
     }
+    let max_searches = if web_tools_allowed {
+        replace_server_tool(&mut request)
+    } else {
+        strip_server_tool(&mut request);
+        None
+    };
 
     let token_input = match token_input(&request) {
         Ok(input) => input,
@@ -114,28 +130,39 @@ async fn messages(
     let conversation_id = conversation_id(&request);
     let prepared = match prepare_request(&state, &request, &conversation_id).await {
         Ok(prepared) => prepared,
+        Err(error) if error.is_context_limit() => {
+            let limit = state.model_cache.get_max_input_tokens(&request.model);
+            return context_limit_response(token_input.estimate(true), limit, &error);
+        }
         Err(error) => return gateway_error_response(&error),
     };
 
+    let search = SearchLoop {
+        auth: state.auth_manager.clone(),
+        config: state.config.clone(),
+        max_searches,
+    };
     if request.stream {
-        stream_response(state, request, token_input, conversation_id, prepared)
-    } else {
-        let source = prepared.source;
-        let result = collect_stream_to_result(
-            source,
-            state.config.first_token_timeout,
-            state.config.streaming_read_timeout,
+        stream_response(
+            state,
+            request,
+            token_input,
+            conversation_id,
+            prepared,
+            search,
         )
-        .await;
-        match result {
-            Ok(result) => {
+    } else {
+        let aliases = prepared.tool_name_aliases;
+        match collect(search.events(prepared.source, prepared.payload)).await {
+            Ok((result, searches)) => {
                 save_nonstream_truncations(&state, &conversation_id, &result);
-                Json(response_from_stream_result(
+                Json(response_with_searches(
                     result,
+                    &searches,
                     &request.model,
                     &state.model_cache,
                     &token_input,
-                    &prepared.tool_name_aliases,
+                    &aliases,
                 ))
                 .into_response()
             }
@@ -199,7 +226,8 @@ async fn count_tokens_endpoint(
 /// Builds the streaming SSE `Response` for a `stream: true` request.
 ///
 /// Drives the [`AnthropicSseFormatter`] state machine: emits the initial
-/// `message_start` frame, then loops over parsed upstream Kiro events,
+/// `message_start` frame, then loops over the [`SearchLoop`]'s events
+/// (upstream Kiro events plus any searches executed on the model's behalf),
 /// interleaving periodic `ping` heartbeats (via a [`tokio::time::interval`])
 /// so proxies/clients do not time out an idle connection while waiting for
 /// upstream tokens. On upstream error the formatter emits a terminal
@@ -211,6 +239,7 @@ fn stream_response(
     token_input: RequestTokenInput,
     conversation_id: String,
     prepared: PreparedRequest,
+    search: SearchLoop,
 ) -> Response {
     let config = state.config.clone();
     let model_cache = (*state.model_cache).clone();
@@ -226,11 +255,7 @@ fn stream_response(
         for frame in formatter.start().unwrap_or_default() {
             yield Ok::<Bytes, Infallible>(Bytes::from(frame));
         }
-        let source = parse_kiro_stream(
-            prepared.source,
-            config.first_token_timeout,
-            config.streaming_read_timeout,
-        );
+        let source = search.events(prepared.source, prepared.payload);
         futures_util::pin_mut!(source);
         let mut pings = tokio::time::interval(DEFAULT_PING_INTERVAL);
         pings.tick().await;
@@ -242,8 +267,13 @@ fn stream_response(
                     }
                 }
                 event = source.next() => match event {
-                    Some(Ok(event)) => {
+                    Some(Ok(LoopEvent::Kiro(event))) => {
                         for frame in formatter.push(event).unwrap_or_default() {
+                            yield Ok(Bytes::from(frame));
+                        }
+                    }
+                    Some(Ok(LoopEvent::WebSearch(call))) => {
+                        for frame in formatter.web_search(&call).unwrap_or_default() {
                             yield Ok(Bytes::from(frame));
                         }
                     }
@@ -275,19 +305,21 @@ fn stream_response(
         .into_response()
 }
 
-/// The outcome of [`prepare_request`]: an open upstream byte stream ready
-/// to be parsed.
+/// The outcome of [`prepare_request`]: an open, preflighted upstream byte
+/// stream, the payload that produced it (needed to continue after a
+/// server-side web search), and the per-request tool name aliases.
 struct PreparedRequest {
-    source: futures_util::stream::BoxStream<'static, std::result::Result<Bytes, reqwest::Error>>,
+    source: ByteStream,
+    payload: Value,
     tool_name_aliases: ToolNameAliases,
 }
 
-/// Converts the request to the Kiro payload and opens an upstream
-/// connection.
+/// Converts the request to the Kiro payload and opens a preflighted
+/// upstream stream (see [`open_chat_stream`]).
 ///
-/// Refreshes the account's access token, resolves its Kiro profile ARN,
+/// Refreshes the account's access token, resolves its Kiro profile ARN, and
 /// builds the Kiro-shaped payload (allocating fresh per-request tool name
-/// aliases), and attempts the upstream preflight request.
+/// aliases).
 async fn prepare_request(
     state: &AnthropicState,
     request: &AnthropicMessagesRequest,
@@ -309,71 +341,56 @@ async fn prepare_request(
         &mut tool_name_aliases,
     )?
     .payload;
-    let source = preflight_upstream(state.auth_manager.clone(), &state.config, payload).await?;
+    let source = open_chat_stream(state.auth_manager.clone(), &state.config, &payload).await?;
     Ok(PreparedRequest {
         source,
+        payload,
         tool_name_aliases,
     })
 }
 
-/// Issues the upstream `generateAssistantResponse` request and waits for
-/// the first byte before returning the stream to the caller.
-///
-/// This "preflight" wait exists so that connection-level failures (auth
-/// errors, rate limits, etc.) surface as an `Err` here — before any bytes
-/// have been sent to the client — rather than partway through an
-/// already-started SSE response. The first byte received is buffered and
-/// re-prepended to the returned stream (via `stream::once(...).chain(...)`)
-/// so no data is lost. Retries up to `first_token_max_retries` times if the
-/// first byte does not arrive within `first_token_timeout`.
-async fn preflight_upstream(
-    auth: Arc<AuthManager>,
-    config: &Config,
-    payload: Value,
-) -> Result<futures_util::stream::BoxStream<'static, std::result::Result<Bytes, reqwest::Error>>> {
-    let tries = config.first_token_max_retries.max(1);
-    for attempt in 0..tries {
-        let client = KiroHttpClient::new(auth.clone(), config)?;
-        let response = client.chat_request_with_retry(&payload, true).await?;
-        let mut source = response.bytes_stream().boxed();
-        match tokio::time::timeout(config.first_token_timeout, source.next()).await {
-            Ok(Some(Ok(first))) => {
-                let replay = stream::once(async move { Ok::<Bytes, reqwest::Error>(first) })
-                    .chain(source)
-                    .boxed();
-                return Ok(replay);
-            }
-            Ok(Some(Err(error))) => {
-                // Nothing has been sent to the client yet, so a transient
-                // failure on the first chunk can be retried with a fresh request.
-                match GatewayError::from(error) {
-                    GatewayError::Network(info) if info.is_retryable && attempt + 1 < tries => {
-                        tracing::warn!(
-                            attempt = attempt + 1,
-                            category = %info.category,
-                            details = %info.technical_details,
-                            "first chunk read failed; retrying upstream request"
-                        );
-                        continue;
-                    }
-                    error => return Err(error),
-                }
-            }
-            Ok(None) => return Ok(source),
-            Err(_) if attempt + 1 < tries => {
-                tracing::warn!(
-                    attempt = attempt + 1,
-                    timeout = ?config.first_token_timeout,
-                    "first token timed out; retrying upstream request"
-                );
-                continue;
-            }
-            Err(_) => return Err(GatewayError::FirstTokenTimeout(config.first_token_timeout)),
-        }
+/// Whether the account's Kiro profile allows web tools (see
+/// [`KiroHttpClient::web_tools_enabled`]).
+async fn web_tools_allowed(state: &AnthropicState) -> bool {
+    match KiroHttpClient::new(state.auth_manager.clone(), &state.config) {
+        Ok(client) => client.web_tools_enabled().await,
+        Err(_) => true,
     }
-    Err(GatewayError::Internal(
-        "first-token preflight exited unexpectedly".into(),
-    ))
+}
+
+/// The response to a WebSearch sub-request when the Kiro profile has web
+/// tools turned off.
+fn web_tools_disabled_response() -> Response {
+    error_response(
+        StatusCode::FORBIDDEN,
+        "permission_error",
+        "Web search is disabled for this Kiro profile by your administrator",
+    )
+}
+
+/// Answers a WebSearch sub-request (only server `web_search` tools offered)
+/// from Kiro's native MCP search, without involving the model.
+async fn native_web_search(state: &AnthropicState, request: &AnthropicMessagesRequest) -> Response {
+    let Some(query) = extract_query(request) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "cannot extract a web search query from messages",
+        );
+    };
+    let input_tokens = match token_input(request) {
+        Ok(input) => input.estimate(true),
+        Err(error) => return gateway_error_response(&error),
+    };
+    let client = match KiroHttpClient::new(state.auth_manager.clone(), &state.config) {
+        Ok(client) => client,
+        Err(error) => return gateway_error_response(&error),
+    };
+    match client.web_search(&query).await {
+        Ok(response) => WebSearchAnswer::new(&request.model, query, &response, input_tokens)
+            .into_response(request.stream),
+        Err(error) => gateway_error_response(&error),
+    }
 }
 
 /// Validates the request's API key. Accepts either an `x-api-key` header
@@ -473,6 +490,29 @@ fn gateway_error_response(error: &GatewayError) -> Response {
     )
 }
 
+/// Builds the response for Kiro's `CONTENT_LENGTH_EXCEEDS_THRESHOLD`
+/// rejection in Anthropic's native shape (`400 invalid_request_error`,
+/// `prompt is too long: N tokens > M maximum`), which is what Claude
+/// clients match on to trigger reactive auto-compaction. Kiro reports no
+/// token count, so `N` is the local estimate, clamped above `M` so the
+/// message never claims the prompt fits.
+fn context_limit_response(
+    estimated_tokens: usize,
+    max_tokens: u32,
+    error: &GatewayError,
+) -> Response {
+    let max_tokens = max_tokens as usize;
+    let prompt_tokens = estimated_tokens.max(max_tokens.saturating_add(1));
+    ErrorDetail::attach(
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            &format!("prompt is too long: {prompt_tokens} tokens > {max_tokens} maximum"),
+        ),
+        error.log_detail(),
+    )
+}
+
 /// Converts the request's messages/tools/system prompt into the plain
 /// [`serde_json::Value`] shapes consumed by [`estimate_request_tokens`].
 fn token_input(request: &AnthropicMessagesRequest) -> Result<RequestTokenInput> {
@@ -530,21 +570,6 @@ fn role_name(role: AnthropicMessageRole) -> &'static str {
         AnthropicMessageRole::Assistant => "assistant",
         AnthropicMessageRole::System => "system",
     }
-}
-
-/// Detects whether the request asked for Anthropic's server-hosted web
-/// search tool (any tool whose `type` starts with `"web_search"`). This
-/// gateway does not yet implement the native MCP bypass for that tool, so
-/// callers reject such requests with a 501 rather than silently ignoring
-/// the tool.
-fn has_native_web_search(request: &AnthropicMessagesRequest) -> bool {
-    request.tools.as_ref().is_some_and(|tools| {
-        tools.iter().any(|tool| {
-            tool.kind
-                .as_deref()
-                .is_some_and(|kind| kind.starts_with("web_search"))
-        })
-    })
 }
 
 /// Rewrites the request in place to recover from previously observed
@@ -782,8 +807,14 @@ mod tests {
         }))
         .unwrap_or_else(|error| panic!("fixture request must deserialize: {error}"));
         let prepared = PreparedRequest {
-            source: stream::pending().boxed(),
+            source: futures_util::stream::pending().boxed(),
+            payload: json!({}),
             tool_name_aliases: ToolNameAliases::default(),
+        };
+        let search = SearchLoop {
+            auth: state.auth_manager.clone(),
+            config: state.config.clone(),
+            max_searches: None,
         };
         let token_input = RequestTokenInput {
             messages: vec![],
@@ -791,7 +822,8 @@ mod tests {
             system: None,
         };
 
-        let response = stream_response(state, request, token_input, "conv".into(), prepared);
+        let response =
+            stream_response(state, request, token_input, "conv".into(), prepared, search);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap_or_else(|error| panic!("stream body must be readable: {error}"));
@@ -810,6 +842,29 @@ mod tests {
 mod validation_status_regression_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn context_limit_uses_anthropic_prompt_too_long_shape() {
+        let error = GatewayError::Upstream {
+            status: 400,
+            info: Box::new(crate::error::enhance_kiro_error(&json!({
+                "message": "Input is too long.",
+                "reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"
+            }))),
+        };
+        assert!(error.is_context_limit());
+        let response = context_limit_response(1000, 200_000, &error);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap_or_else(|error| panic!("body must be readable: {error}"));
+        let value: Value = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| panic!("body must be JSON: {error}"));
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            value["error"]["message"],
+            "prompt is too long: 200001 tokens > 200000 maximum"
+        );
+    }
     #[test]
     fn empty_messages_uses_unprocessable_entity_status() {
         let response = empty_messages_response();

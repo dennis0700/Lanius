@@ -20,6 +20,7 @@
 
 mod anthropic;
 mod openai;
+mod search_loop;
 
 use axum::response::Response;
 

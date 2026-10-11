@@ -41,7 +41,7 @@ Lanius 完全通过环境变量进行配置（如果工作目录中存在 `.env`
 | `TRUNCATION_RECOVERY` | `true` | 工具/内容输出被截断时是否触发恢复提示流程（参见 [truncation.md](truncation.md)）。 |
 | `KIRO_MAX_PAYLOAD_BYTES` | `600000` | 发送到上游的请求 payload 最大大小，单位为字节（按 Kiro 自身的计算方式）。 |
 | `AUTO_TRIM_PAYLOAD` | `false` | 为 `true` 时，超大的 payload 会被自动裁剪（丢弃最早的历史记录），而不是被拒绝。 |
-| `WEB_SEARCH_ENABLED` | `true` | 是否为 OpenAI 风格的请求声明/注入合成的 `web_search` 工具。 |
+| `WEB_SEARCH_ENABLED` | `true` | 是否为 OpenAI 风格的请求提供一个由 Lanius 通过 Kiro 原生搜索执行的 `web_search` 工具。Anthropic 请求只要提供了服务端 `web_search_*` 工具就会使用它。 |
 
 ## 超时与重试
 

@@ -46,7 +46,7 @@ See [auth.md](auth.md) for how these sources are merged and prioritized.
 | `TRUNCATION_RECOVERY` | `true` | Whether truncated tool/content output triggers the recovery-prompt flow (see [truncation.md](truncation.md)). |
 | `KIRO_MAX_PAYLOAD_BYTES` | `600000` | Maximum request payload size, in bytes (Kiro's own counting method), sent upstream. |
 | `AUTO_TRIM_PAYLOAD` | `false` | When `true`, oversized payloads are automatically trimmed (dropping oldest history) rather than rejected. |
-| `WEB_SEARCH_ENABLED` | `true` | Whether the synthetic `web_search` tool is advertised/injected for OpenAI-style requests. |
+| `WEB_SEARCH_ENABLED` | `true` | Whether OpenAI-style requests get a `web_search` tool that Lanius executes through Kiro's native search. Anthropic requests use it whenever they offer the server `web_search_*` tool. |
 
 ## Timeouts and retries
 

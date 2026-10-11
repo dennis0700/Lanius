@@ -374,7 +374,7 @@ where
 /// truncation and saves a recovery record if needed, and assembles the
 /// `message` object (optionally including `reasoning_content` and
 /// `tool_calls`) along with computed token usage.
-fn response_value_from_result(
+pub(crate) fn response_value_from_result(
     mut result: StreamResult,
     context: &OpenAiFormatContext,
 ) -> Result<Value> {

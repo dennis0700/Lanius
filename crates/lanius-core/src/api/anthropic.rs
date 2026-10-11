@@ -17,6 +17,7 @@
 mod models;
 mod routes;
 mod sse;
+mod web_search;
 
 pub use models::{
     AnthropicMessage, AnthropicMessageContent, AnthropicMessageRole, AnthropicMessagesRequest,

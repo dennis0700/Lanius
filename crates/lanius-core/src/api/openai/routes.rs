@@ -8,7 +8,7 @@
 //!   [`crate::model::ModelResolver`] before dispatching to Kiro.
 //! - Converting the request into the Kiro payload via
 //!   [`build_kiro_payload`] and issuing the upstream request.
-//! - Injecting a synthetic `web_search` tool when enabled, and rewriting
+//! - Offering a server-executed `web_search` tool when enabled, and rewriting
 //!   requests to inject truncation-recovery notices (see
 //!   [`crate::truncation`]).
 //! - Producing either a buffered JSON response or a streamed SSE response
@@ -22,19 +22,22 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use std::future::Future;
 use std::sync::Arc;
 
-use futures_util::{StreamExt, stream};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 use super::models::{
     ChatCompletionRequest, ChatMessage, ModelList, OpenAIMessageContent, OpenAIModel, Tool,
     ToolFunction,
 };
-use super::sse::{OpenAiFormatContext, collect_openai_response, encode_openai_sse};
+use super::sse::{OpenAiFormatContext, encode_openai_sse, response_value_from_result};
 use crate::api::DEFAULT_PING_INTERVAL;
 use crate::api::ErrorDetail;
+use crate::api::search_loop::{
+    ByteStream, DEFAULT_MAX_SEARCHES, SearchLoop, WEB_SEARCH_TOOL_NAME, collect, open_chat_stream,
+    text_events,
+};
 use crate::auth::AuthManager;
 use crate::compat::ToolNameAliases;
 use crate::config::{APP_TITLE, APP_VERSION, Config};
@@ -44,7 +47,9 @@ use crate::model::{ModelInfoCache, ModelResolver};
 use crate::truncation::{
     TruncationStore, generate_truncation_user_message, prepend_tool_recovery_notice,
 };
-use crate::upstream::{KiroHttpClient, parse_kiro_stream};
+use crate::upstream::{
+    KiroEvent, KiroHttpClient, WEB_SEARCH_TOOL_DESCRIPTION, web_search_input_schema,
+};
 use crate::utils::{HashableMessage, generate_conversation_id};
 
 /// Shared axum state for the OpenAI routes: gateway config, the shared
@@ -205,7 +210,9 @@ async fn chat_completions(
     let original_messages = messages_to_values(&request.messages);
     let conversation_id = conversation_id_for(&request.messages);
     inject_truncation_recovery(&mut request, &state.truncation_store, &conversation_id);
-    inject_web_search_tool(&mut request, state.config.web_search_enabled);
+    let web_tools_allowed = state.config.web_search_enabled
+        && web_tools_allowed(&state.auth_manager, &state.config).await;
+    let server_search = inject_web_search_tool(&mut request, web_tools_allowed);
 
     request.model = state.model_resolver.resolve(&request.model).internal_id;
     let prepared = match prepare_openai_request(&state, &request, &conversation_id).await {
@@ -223,43 +230,42 @@ async fn chat_completions(
         state.truncation_store.clone(),
     )
     .with_tool_name_aliases(prepared.tool_name_aliases);
-    match prepared.upstream {
-        OpenAiUpstream::Stream(source) => streaming_response(source, format_context),
-        OpenAiUpstream::Response(response) => {
-            match collect_openai_response(response.bytes_stream(), format_context).await {
+    let search = SearchLoop {
+        auth: state.auth_manager.clone(),
+        config: state.config.clone(),
+        max_searches: server_search.then_some(DEFAULT_MAX_SEARCHES),
+    };
+    let events = search.events(prepared.source, prepared.payload);
+    if request.stream {
+        streaming_response(text_events(events), format_context)
+    } else {
+        match collect(events).await {
+            Ok((result, _)) => match response_value_from_result(result, &format_context) {
                 Ok(response) => Json(response).into_response(),
                 Err(error) => gateway_error_response(error),
-            }
+            },
+            Err(error) => gateway_error_response(error),
         }
     }
 }
 
-/// The outcome of [`prepare_openai_request`]: either a buffered upstream
-/// response or an open byte stream, plus the per-request tool name alias
-/// table needed to finish formatting the response.
+/// The outcome of [`prepare_openai_request`]: an open, preflighted
+/// upstream byte stream, the payload that produced it (needed to continue
+/// the conversation after a server-side web search), and the per-request
+/// tool name alias table needed to finish formatting the response.
 struct PreparedOpenAiRequest {
-    upstream: OpenAiUpstream,
+    source: ByteStream,
+    payload: Value,
     tool_name_aliases: ToolNameAliases,
 }
 
-/// The upstream connection prepared for a request: a single buffered
-/// response for non-streaming requests, or an already-preflighted byte
-/// stream for streaming requests.
-enum OpenAiUpstream {
-    Response(reqwest::Response),
-    Stream(
-        futures_util::stream::BoxStream<'static, std::result::Result<bytes::Bytes, reqwest::Error>>,
-    ),
-}
-
-/// Converts the request to the Kiro payload and opens an upstream
-/// connection (buffered for non-streaming requests, preflighted for
-/// streaming requests).
+/// Converts the request to the Kiro payload and opens a preflighted
+/// upstream stream (see [`open_chat_stream`]). Non-streaming requests use
+/// the same streamed upstream call and are collected afterwards.
 ///
-/// Refreshes the access token, resolves the Kiro profile ARN, builds the
-/// Kiro-shaped payload (allocating fresh per-request tool name aliases),
-/// and issues the request (streamed preflight or buffered, depending on
-/// `request.stream`).
+/// Refreshes the access token, resolves the Kiro profile ARN, and builds
+/// the Kiro-shaped payload (allocating fresh per-request tool name
+/// aliases).
 async fn prepare_openai_request(
     state: &OpenAiState,
     request: &ChatCompletionRequest,
@@ -281,136 +287,22 @@ async fn prepare_openai_request(
         &mut tool_name_aliases,
     )?
     .payload;
-    let upstream = if request.stream {
-        preflight_openai_stream(state.auth_manager.clone(), &state.config, payload)
-            .await
-            .map(OpenAiUpstream::Stream)?
-    } else {
-        let client = KiroHttpClient::new(state.auth_manager.clone(), &state.config)?;
-        client
-            .chat_request_with_retry(&payload, true)
-            .await
-            .map(OpenAiUpstream::Response)?
-    };
+    let source = open_chat_stream(state.auth_manager.clone(), &state.config, &payload).await?;
     Ok(PreparedOpenAiRequest {
-        upstream,
+        source,
+        payload,
         tool_name_aliases,
     })
 }
 
-/// Issues the upstream `generateAssistantResponse` request for a streaming
-/// chat completion and waits for the first byte (via
-/// [`preflight_first_byte`]) before returning the stream, so connection-
-/// level failures surface before any bytes are sent to the client.
-async fn preflight_openai_stream(
-    auth_manager: std::sync::Arc<crate::auth::AuthManager>,
-    config: &Config,
-    payload: Value,
-) -> crate::error::Result<
-    futures_util::stream::BoxStream<'static, std::result::Result<bytes::Bytes, reqwest::Error>>,
-> {
-    preflight_first_byte(
-        config.first_token_max_retries,
-        config.first_token_timeout,
-        || {
-            let auth_manager = auth_manager.clone();
-            let payload = &payload;
-            async move {
-                let client = KiroHttpClient::new(auth_manager, config)?;
-                let response = client.chat_request_with_retry(payload, true).await?;
-                Ok(response.bytes_stream().boxed())
-            }
-        },
-    )
-    .await
-}
-
-/// Generic first-byte preflight helper: calls `request` (a factory closure
-/// so a fresh HTTP request can be issued on each retry) up to `retries`
-/// times, waiting up to `timeout` for the first byte of each attempt. On
-/// success, the first byte is buffered and re-prepended to the returned
-/// stream (via `stream::once(...).chain(...)`) so no data is lost. Times
-/// out with [`GatewayError::FirstTokenTimeout`] if no attempt produces a
-/// first byte in time.
-async fn preflight_first_byte<F, Fut>(
-    retries: u32,
-    timeout: std::time::Duration,
-    mut request: F,
-) -> crate::error::Result<
-    futures_util::stream::BoxStream<'static, std::result::Result<bytes::Bytes, reqwest::Error>>,
->
-where
-    F: FnMut() -> Fut,
-    Fut: Future<
-        Output = crate::error::Result<
-            futures_util::stream::BoxStream<
-                'static,
-                std::result::Result<bytes::Bytes, reqwest::Error>,
-            >,
-        >,
-    >,
-{
-    let tries = retries.max(1);
-    for attempt in 0..tries {
-        let mut source = request().await?;
-        match tokio::time::timeout(timeout, source.next()).await {
-            Ok(Some(Ok(first))) => {
-                return Ok(
-                    stream::once(async move { Ok::<bytes::Bytes, reqwest::Error>(first) })
-                        .chain(source)
-                        .boxed(),
-                );
-            }
-            Ok(Some(Err(error))) => {
-                // Nothing has been sent to the client yet, so a transient
-                // failure on the first chunk can be retried with a fresh request.
-                match GatewayError::from(error) {
-                    GatewayError::Network(info) if info.is_retryable && attempt + 1 < tries => {
-                        tracing::warn!(
-                            attempt = attempt + 1,
-                            category = %info.category,
-                            details = %info.technical_details,
-                            "first chunk read failed; retrying upstream request"
-                        );
-                        continue;
-                    }
-                    error => return Err(error),
-                }
-            }
-            Ok(None) => return Ok(source),
-            Err(_) if attempt + 1 < tries => {
-                tracing::warn!(
-                    attempt = attempt + 1,
-                    timeout = ?timeout,
-                    "first token timed out; retrying upstream request"
-                );
-                continue;
-            }
-            Err(_) => return Err(GatewayError::FirstTokenTimeout(timeout)),
-        }
-    }
-    Err(GatewayError::Internal(
-        "first-token preflight exited unexpectedly".to_string(),
-    ))
-}
-
 /// Builds the streaming `text/event-stream` [`Response`] for a request,
-/// wiring the raw upstream byte stream through Kiro event parsing
-/// ([`parse_kiro_stream`]) and OpenAI SSE encoding ([`encode_openai_sse`]).
+/// encoding its upstream events with [`encode_openai_sse`].
 /// If the encoder itself errors mid-stream, emits a `data: [DONE]` frame
 /// and terminates rather than propagating the error into the HTTP body.
 fn streaming_response(
-    source: futures_util::stream::BoxStream<
-        'static,
-        std::result::Result<bytes::Bytes, reqwest::Error>,
-    >,
+    events: impl futures_util::Stream<Item = crate::error::Result<KiroEvent>> + Send + 'static,
     context: OpenAiFormatContext,
 ) -> Response {
-    let events = parse_kiro_stream(
-        source,
-        context.config.first_token_timeout,
-        context.config.streaming_read_timeout,
-    );
     let frames = encode_openai_sse(events, context);
     let body_stream = async_stream::stream! {
         futures_util::pin_mut!(frames);
@@ -635,39 +527,46 @@ fn message_content_text(content: Option<&OpenAIMessageContent>) -> String {
     }
 }
 
-/// Appends a synthetic `web_search` function tool to the request when
-/// `enabled` is `true`, unless the client already declared a tool with
-/// that exact name — avoiding a duplicate tool definition being sent
-/// upstream.
-fn inject_web_search_tool(request: &mut ChatCompletionRequest, enabled: bool) {
+/// Whether the account's Kiro profile allows web tools (see
+/// [`KiroHttpClient::web_tools_enabled`]).
+async fn web_tools_allowed(auth: &Arc<AuthManager>, config: &Config) -> bool {
+    match KiroHttpClient::new(auth.clone(), config) {
+        Ok(client) => client.web_tools_enabled().await,
+        Err(_) => true,
+    }
+}
+
+/// Offers the model a `web_search` tool that Lanius executes itself (see
+/// [`SearchLoop`]) when `enabled`. Returns `true` if the tool was added; a
+/// client that declares its own `web_search` function keeps it, and those
+/// calls are passed through to the client unchanged.
+fn inject_web_search_tool(request: &mut ChatCompletionRequest, enabled: bool) -> bool {
     if !enabled {
-        return;
+        return false;
     }
     let tools = request.tools.get_or_insert_with(Vec::new);
-    let already_present = tools.iter().any(|tool| {
-        tool.kind == "function"
-            && tool
-                .function
-                .as_ref()
-                .is_some_and(|function| function.name == "web_search")
+    let client_owned = tools.iter().any(|tool| {
+        tool.function
+            .as_ref()
+            .map(|function| function.name.as_str())
+            .or(tool.name.as_deref())
+            == Some(WEB_SEARCH_TOOL_NAME)
     });
-    if !already_present {
-        tools.push(Tool {
-            kind: "function".to_string(),
-            function: Some(ToolFunction {
-                name: "web_search".to_string(),
-                description: Some("Search the web for current information. Use when you need up-to-date data from the internet.".to_string()),
-                parameters: Some(serde_json::from_value(json!({
-                    "type": "object",
-                    "properties": {"query": {"type": "string", "description": "Search query"}},
-                    "required": ["query"],
-                })).unwrap_or_default()),
-            }),
-            name: None,
-            description: None,
-            input_schema: None,
-        });
+    if client_owned {
+        return false;
     }
+    tools.push(Tool {
+        kind: "function".to_string(),
+        function: Some(ToolFunction {
+            name: WEB_SEARCH_TOOL_NAME.to_string(),
+            description: Some(WEB_SEARCH_TOOL_DESCRIPTION.to_string()),
+            parameters: web_search_input_schema().as_object().cloned(),
+        }),
+        name: None,
+        description: None,
+        input_schema: None,
+    });
+    true
 }
 
 #[cfg(test)]
@@ -732,7 +631,8 @@ mod tests {
         let mut request: ChatCompletionRequest = serde_json::from_value(json!({
             "model": "m", "messages": [{"role": "tool", "tool_call_id": "call", "content": "result"}]
         })).expect("fixture is valid request");
-        inject_web_search_tool(&mut request, true);
+        assert!(inject_web_search_tool(&mut request, true));
+        assert!(!inject_web_search_tool(&mut request, true));
         assert_eq!(request.tools.as_ref().map(Vec::len), Some(1));
         let store = TruncationStore::default();
         let conversation = conversation_id_for(&request.messages);
@@ -763,114 +663,5 @@ mod tests {
             format_model_description(None, None),
             Some("Claude model via Kiro API".to_string())
         );
-    }
-}
-
-#[cfg(test)]
-mod failover_and_preflight_regression_tests {
-    use super::*;
-    use std::collections::VecDeque;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn first_byte_timeout_retries_before_returning_a_stream() {
-        let mut sources = VecDeque::from([
-            stream::pending::<std::result::Result<bytes::Bytes, reqwest::Error>>().boxed(),
-            stream::once(async {
-                Ok::<bytes::Bytes, reqwest::Error>(bytes::Bytes::from_static(b"first"))
-            })
-            .boxed(),
-        ]);
-        let mut requests = 0_u8;
-        let mut source =
-            preflight_first_byte(2, Duration::from_millis(1), || {
-                requests = requests.saturating_add(1);
-                let next = sources.pop_front();
-                async move {
-                    next.ok_or_else(|| GatewayError::Internal("missing test stream".to_string()))
-                }
-            })
-            .await
-            .unwrap_or_else(|error| panic!("preflight should retry before emitting: {error}"));
-        assert_eq!(requests, 2);
-        let first = source
-            .next()
-            .await
-            .unwrap_or_else(|| panic!("replayed first byte must be available"))
-            .unwrap_or_else(|error| panic!("test stream must be successful: {error}"));
-        assert_eq!(first, bytes::Bytes::from_static(b"first"));
-    }
-
-    // Serves one response that sends headers and then drops the connection
-    // before any body chunk, so reading the first chunk yields a real
-    // `reqwest::Error`.
-    async fn truncated_body_stream()
-    -> futures_util::stream::BoxStream<'static, std::result::Result<bytes::Bytes, reqwest::Error>>
-    {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap_or_else(|error| panic!("bind test listener: {error}"));
-        let addr = listener
-            .local_addr()
-            .unwrap_or_else(|error| panic!("listener address: {error}"));
-        tokio::spawn(async move {
-            if let Ok((mut socket, _)) = listener.accept().await {
-                let mut buf = [0_u8; 1024];
-                let _ = socket.read(&mut buf).await;
-                let _ = socket
-                    .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
-                    .await;
-            }
-        });
-        reqwest::get(format!("http://{addr}/"))
-            .await
-            .unwrap_or_else(|error| panic!("test request: {error}"))
-            .bytes_stream()
-            .boxed()
-    }
-
-    #[tokio::test]
-    async fn first_chunk_network_error_retries_before_returning_a_stream() {
-        let mut sources = VecDeque::from([
-            truncated_body_stream().await,
-            stream::once(async {
-                Ok::<bytes::Bytes, reqwest::Error>(bytes::Bytes::from_static(b"first"))
-            })
-            .boxed(),
-        ]);
-        let mut requests = 0_u8;
-        let mut source =
-            preflight_first_byte(2, Duration::from_secs(5), || {
-                requests = requests.saturating_add(1);
-                let next = sources.pop_front();
-                async move {
-                    next.ok_or_else(|| GatewayError::Internal("missing test stream".to_string()))
-                }
-            })
-            .await
-            .unwrap_or_else(|error| {
-                panic!("preflight should retry a dropped first chunk: {error}")
-            });
-        assert_eq!(requests, 2);
-        let first = source
-            .next()
-            .await
-            .unwrap_or_else(|| panic!("replayed first byte must be available"))
-            .unwrap_or_else(|error| panic!("test stream must be successful: {error}"));
-        assert_eq!(first, bytes::Bytes::from_static(b"first"));
-    }
-
-    #[tokio::test]
-    async fn first_chunk_network_error_surfaces_after_last_attempt() {
-        let mut requests = 0_u8;
-        let result = preflight_first_byte(2, Duration::from_secs(5), || {
-            requests = requests.saturating_add(1);
-            async { Ok(truncated_body_stream().await) }
-        })
-        .await;
-        assert_eq!(requests, 2);
-        assert!(matches!(result, Err(GatewayError::Network(_))));
     }
 }

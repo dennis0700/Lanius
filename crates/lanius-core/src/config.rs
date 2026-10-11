@@ -221,7 +221,8 @@ pub struct Config {
     /// rejected.
     pub auto_trim_payload: bool,
 
-    /// Whether the web-search tool capability is advertised/enabled.
+    /// Whether OpenAI requests get a `web_search` tool that the gateway
+    /// executes through Kiro's native search.
     pub web_search_enabled: bool,
     /// Log verbosity level (e.g. `"INFO"`, `"DEBUG"`).
     pub log_level: String,

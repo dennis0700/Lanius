@@ -16,6 +16,7 @@
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
+use super::web_search::{executed_count, search_blocks};
 use crate::compat::ToolNameAliases;
 use crate::error::Result;
 use crate::model::ModelInfoCache;
@@ -23,7 +24,9 @@ use crate::tokenizer::{
     calculate_tokens_from_context_usage, count_tokens, estimate_request_tokens,
 };
 use crate::truncation::{TruncationStore, is_content_truncated};
-use crate::upstream::{KiroEvent, KiroEventType, StreamResult, ToolCall, parse_bracket_tool_calls};
+use crate::upstream::{
+    KiroEvent, KiroEventType, StreamResult, ToolCall, WebSearchCall, parse_bracket_tool_calls,
+};
 use crate::utils::format_json_spaced;
 
 /// How often to emit a `ping` heartbeat frame while waiting for upstream
@@ -156,6 +159,7 @@ pub struct AnthropicSseFormatter {
     context_usage: Option<f64>,
     cache_usage: Map<String, Value>,
     tool_count: usize,
+    web_search_requests: usize,
     tool_name_aliases: ToolNameAliases,
 }
 
@@ -194,7 +198,7 @@ impl AnthropicSseFormatter {
         Self {
             model: model.into(),
             model_cache,
-            input_tokens: request.estimate(false),
+            input_tokens: request.estimate(true),
             conversation_id: conversation_id.into(),
             truncation_store,
             started: false,
@@ -209,6 +213,7 @@ impl AnthropicSseFormatter {
             context_usage: None,
             cache_usage: Map::new(),
             tool_count: 0,
+            web_search_requests: 0,
             tool_name_aliases: ToolNameAliases::default(),
         }
     }
@@ -406,6 +411,44 @@ impl AnthropicSseFormatter {
         Ok(frames)
     }
 
+    /// Emits one search Lanius executed on the model's behalf as a
+    /// `server_tool_use` block followed by its `web_search_tool_result`
+    /// block, closing any open text/thinking block first.
+    pub(crate) fn web_search(&mut self, call: &WebSearchCall) -> Result<Vec<String>> {
+        let mut frames = Vec::new();
+        self.flush_alias_text(&mut frames)?;
+        self.close_open_blocks(&mut frames)?;
+        let (tool_use, result) = search_blocks(call);
+        let index = self.current_index;
+        let input = format_json_spaced(&tool_use["input"]);
+        let mut start = tool_use;
+        start["input"] = json!({});
+        frames.push(format_sse_event(
+            "content_block_start",
+            &json!({"type":"content_block_start","index":index,"content_block":start}),
+        )?);
+        frames.push(format_sse_event(
+            "content_block_delta",
+            &json!({"type":"content_block_delta","index":index,"delta":{"type":"input_json_delta","partial_json":input}}),
+        )?);
+        frames.push(format_sse_event(
+            "content_block_stop",
+            &json!({"type":"content_block_stop","index":index}),
+        )?);
+        let index = index + 1;
+        frames.push(format_sse_event(
+            "content_block_start",
+            &json!({"type":"content_block_start","index":index,"content_block":result}),
+        )?);
+        frames.push(format_sse_event(
+            "content_block_stop",
+            &json!({"type":"content_block_stop","index":index}),
+        )?);
+        self.current_index += 2;
+        self.web_search_requests += executed_count(std::slice::from_ref(call));
+        Ok(frames)
+    }
+
     /// Finalizes the stream: flushes any buffered alias text, closes any
     /// still-open content block, and parses `[Called tool with args:
     /// ...]`-style bracket tool calls out of the accumulated text (some
@@ -477,8 +520,15 @@ impl AnthropicSseFormatter {
             "end_turn"
         };
         let mut usage = Map::new();
+        usage.insert("input_tokens".to_string(), json!(self.input_tokens));
         usage.insert("output_tokens".to_string(), json!(output_tokens));
         usage.extend(std::mem::take(&mut self.cache_usage));
+        if self.web_search_requests > 0 {
+            usage.insert(
+                "server_tool_use".to_string(),
+                json!({"web_search_requests": self.web_search_requests}),
+            );
+        }
         frames.push(format_sse_event(
             "message_delta",
             &json!({"type":"message_delta","delta":{"stop_reason":stop_reason,"stop_sequence":Value::Null},"usage":usage}),
@@ -659,7 +709,22 @@ impl AnthropicSseFormatter {
 /// assert_eq!(response["content"][0]["text"], "hello");
 /// ```
 pub fn response_from_stream_result(
+    result: StreamResult,
+    model: &str,
+    model_cache: &ModelInfoCache,
+    request: &RequestTokenInput,
+    aliases: &ToolNameAliases,
+) -> Value {
+    response_with_searches(result, &[], model, model_cache, request, aliases)
+}
+
+/// [`response_from_stream_result`] for a response that also involved
+/// searches Lanius executed on the model's behalf: their
+/// `server_tool_use` / `web_search_tool_result` blocks come after any
+/// thinking block and before the final text and tool calls.
+pub(crate) fn response_with_searches(
     mut result: StreamResult,
+    searches: &[WebSearchCall],
     model: &str,
     model_cache: &ModelInfoCache,
     request: &RequestTokenInput,
@@ -669,7 +734,7 @@ pub fn response_from_stream_result(
     for tool in &mut result.tool_calls {
         tool.name = aliases.original_for(&tool.name);
     }
-    let mut input_tokens = request.estimate(false);
+    let mut input_tokens = request.estimate(true);
     let output_tokens = count_tokens(
         &format!("{}{}", result.content, result.thinking_content),
         false,
@@ -692,6 +757,11 @@ pub fn response_from_stream_result(
         content.push(
             json!({"type":"thinking","thinking":result.thinking_content,"signature":signature}),
         );
+    }
+    for search in searches {
+        let (tool_use, tool_result) = search_blocks(search);
+        content.push(tool_use);
+        content.push(tool_result);
     }
     if !result.content.is_empty() {
         content.push(json!({"type":"text","text":result.content}));
@@ -721,6 +791,13 @@ pub fn response_from_stream_result(
     usage.insert("output_tokens".into(), json!(output_tokens));
     if let Some(upstream) = result.usage {
         extract_cache_usage(&upstream, &mut usage);
+    }
+    let web_search_requests = executed_count(searches);
+    if web_search_requests > 0 {
+        usage.insert(
+            "server_tool_use".into(),
+            json!({"web_search_requests": web_search_requests}),
+        );
     }
     json!({"id":generate_message_id(),"type":"message","role":"assistant","content":content,"model":model,"stop_reason":reason,"stop_sequence":Value::Null,"usage":usage})
 }
@@ -915,6 +992,11 @@ mod tests {
         );
         frames.extend(formatter.finish().unwrap_or_default());
         assert!(frames.iter().any(|frame| frame.contains("max_tokens")));
+        let delta = frames
+            .iter()
+            .find(|frame| frame.starts_with("event: message_delta"))
+            .unwrap_or_else(|| panic!("message_delta must be emitted"));
+        assert!(delta.contains("\"input_tokens\""), "{delta}");
         let response = response_from_stream_result(
             StreamResult {
                 content: "ok".into(),

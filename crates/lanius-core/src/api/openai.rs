@@ -2,7 +2,7 @@
 //!
 //! Implements the OpenAI-shaped `/v1/models` and `/v1/chat/completions`
 //! endpoints on top of the shared Kiro upstream. Requests are validated,
-//! optionally augmented (e.g. injected `web_search` tool, truncation
+//! optionally augmented (e.g. server-executed `web_search` tool, truncation
 //! recovery messages), and converted to the Kiro payload format via
 //! [`crate::convert::build_kiro_payload`]. Kiro's response/stream is translated back
 //! into OpenAI-shaped JSON or Server-Sent Events chunks.

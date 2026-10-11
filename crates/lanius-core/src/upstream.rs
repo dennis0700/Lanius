@@ -14,6 +14,7 @@ mod client;
 mod endpoint;
 mod parser;
 mod stream;
+mod web_search;
 
 pub use client::KiroHttpClient;
 pub use parser::{
@@ -23,4 +24,8 @@ pub use parser::{
 pub use stream::{
     KiroEvent, KiroEventType, StreamResult, collect_stream_to_result,
     collect_stream_to_result_with_config, parse_kiro_stream, parse_kiro_stream_with_config,
+};
+pub use web_search::{
+    WEB_SEARCH_TOOL_DESCRIPTION, WebSearchCall, WebSearchError, WebSearchResponse, WebSearchResult,
+    web_search_input_schema,
 };

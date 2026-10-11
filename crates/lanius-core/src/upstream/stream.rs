@@ -243,6 +243,83 @@ impl StreamResult {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Folds one event into the result: content and thinking text are
+    /// appended, the last thinking signature is kept, tool calls are
+    /// collected, and only a truthy usage value overwrites `usage`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::upstream::{KiroEvent, StreamResult};
+    ///
+    /// let mut result = StreamResult::new();
+    /// result.apply(KiroEvent::content("hi"));
+    /// assert_eq!(result.content, "hi");
+    /// ```
+    pub fn apply(&mut self, event: KiroEvent) {
+        match event {
+            KiroEvent {
+                event_type: KiroEventType::Content,
+                content: Some(content),
+                ..
+            } => self.content.push_str(&content),
+            KiroEvent {
+                event_type: KiroEventType::Thinking,
+                thinking_content,
+                thinking_signature,
+                ..
+            } => {
+                if let Some(thinking) = thinking_content {
+                    self.thinking_content.push_str(&thinking);
+                }
+                if thinking_signature.is_some() {
+                    self.thinking_signature = thinking_signature;
+                }
+            }
+            KiroEvent {
+                event_type: KiroEventType::ToolUse,
+                tool_use: Some(tool_call),
+                ..
+            } => self.tool_calls.push(tool_call),
+            KiroEvent {
+                event_type: KiroEventType::Usage,
+                usage: Some(usage),
+                ..
+            } => {
+                if is_truthy(&usage) {
+                    self.usage = Some(usage);
+                }
+            }
+            KiroEvent {
+                event_type: KiroEventType::ContextUsage,
+                context_usage_percentage: Some(percentage),
+                ..
+            } => self.context_usage_percentage = Some(percentage),
+            _ => {}
+        }
+    }
+
+    /// Merges bracket-style tool calls found in the accumulated content
+    /// into `tool_calls`, deduplicated. Call once, after the last event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::upstream::StreamResult;
+    ///
+    /// let mut result = StreamResult::new();
+    /// result.content = "[Called read with args: {\"path\": \"a\"}]".into();
+    /// result.finalize();
+    /// assert_eq!(result.tool_calls.len(), 1);
+    /// ```
+    pub fn finalize(&mut self) {
+        let bracket_calls = parse_bracket_tool_calls(&self.content);
+        if !bracket_calls.is_empty() {
+            self.tool_calls.extend(bracket_calls);
+            self.tool_calls = deduplicate_tool_calls(std::mem::take(&mut self.tool_calls));
+        }
+    }
 }
 
 /// Turns a raw byte stream from Kiro into a stream of [`KiroEvent`]s.
@@ -383,58 +460,9 @@ where
     let stream = parse_kiro_stream(byte_stream, first_token_timeout, streaming_read_timeout);
     futures_util::pin_mut!(stream);
     while let Some(event) = stream.next().await {
-        match event? {
-            KiroEvent {
-                event_type: KiroEventType::Content,
-                content: Some(content),
-                ..
-            } => {
-                result.content.push_str(&content);
-            }
-            KiroEvent {
-                event_type: KiroEventType::Thinking,
-                thinking_content,
-                thinking_signature,
-                ..
-            } => {
-                if let Some(thinking) = thinking_content {
-                    result.thinking_content.push_str(&thinking);
-                }
-                if thinking_signature.is_some() {
-                    result.thinking_signature = thinking_signature;
-                }
-            }
-            KiroEvent {
-                event_type: KiroEventType::ToolUse,
-                tool_use: Some(tool_call),
-                ..
-            } => {
-                result.tool_calls.push(tool_call);
-            }
-            KiroEvent {
-                event_type: KiroEventType::Usage,
-                usage: Some(usage),
-                ..
-            } => {
-                if is_truthy(&usage) {
-                    result.usage = Some(usage);
-                }
-            }
-            KiroEvent {
-                event_type: KiroEventType::ContextUsage,
-                context_usage_percentage: Some(percentage),
-                ..
-            } => {
-                result.context_usage_percentage = Some(percentage);
-            }
-            _ => {}
-        }
+        result.apply(event?);
     }
-    let bracket_calls = parse_bracket_tool_calls(&result.content);
-    if !bracket_calls.is_empty() {
-        result.tool_calls.extend(bracket_calls);
-        result.tool_calls = deduplicate_tool_calls(std::mem::take(&mut result.tool_calls));
-    }
+    result.finalize();
     Ok(result)
 }
 

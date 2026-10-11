@@ -132,6 +132,21 @@ impl GatewayError {
         }
     }
 
+    /// Returns `true` when this is a Kiro rejection caused by the
+    /// conversation exceeding the model's context window (see
+    /// [`KiroErrorInfo::is_context_limit`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::GatewayError;
+    ///
+    /// assert!(!GatewayError::Internal("boom".into()).is_context_limit());
+    /// ```
+    pub fn is_context_limit(&self) -> bool {
+        matches!(self, Self::Upstream { info, .. } if info.is_context_limit())
+    }
+
     /// Returns an operator-facing description of this error for logs. Unlike
     /// [`Self::user_message`], this keeps diagnostic detail such as Kiro's
     /// raw error message/reason and the transport error chain.
@@ -262,6 +277,24 @@ pub struct KiroErrorInfo {
     pub user_message: String,
     /// The raw `message` field as reported by Kiro, preserved for logs/debugging.
     pub original_message: String,
+}
+
+impl KiroErrorInfo {
+    /// Returns `true` when Kiro rejected the request because the
+    /// conversation exceeds the model's context window.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::error::enhance_kiro_error;
+    /// use serde_json::json;
+    ///
+    /// let info = enhance_kiro_error(&json!({"reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"}));
+    /// assert!(info.is_context_limit());
+    /// ```
+    pub fn is_context_limit(&self) -> bool {
+        self.reason == KiroErrorReason::ContentLengthExceedsThreshold.as_str()
+    }
 }
 
 impl fmt::Display for KiroErrorInfo {

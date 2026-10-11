@@ -439,6 +439,12 @@ impl KiroHttpClient {
     pub fn client(&self) -> &reqwest::Client {
         &self.client
     }
+
+    /// The auth manager used for token acquisition/refresh, shared with
+    /// sibling upstream modules that build their own requests.
+    pub(super) fn auth_manager(&self) -> &Arc<AuthManager> {
+        &self.auth_manager
+    }
 }
 
 // Appends `params` as query-string pairs onto `url`, parsing/re-serializing
@@ -481,7 +487,7 @@ fn build_client(config: &Config, timeouts: ClientTimeouts) -> Result<reqwest::Cl
 }
 
 // Exponential backoff: `BASE_RETRY_DELAY * 2^attempt` (1s, 2s, 4s, ...).
-fn retry_delay(attempt: u32) -> Duration {
+pub(super) fn retry_delay(attempt: u32) -> Duration {
     BASE_RETRY_DELAY.saturating_mul(1_u32 << attempt)
 }
 
@@ -496,7 +502,7 @@ async fn upstream_error(response: Response) -> GatewayError {
 // Parses `body` as JSON (falling back to wrapping the raw text in a
 // `{"message": ...}` object if it isn't valid JSON) and runs it through
 // `enhance_kiro_error` to build a classified, user-facing error.
-fn upstream_error_from_body(status: StatusCode, body: &str) -> GatewayError {
+pub(super) fn upstream_error_from_body(status: StatusCode, body: &str) -> GatewayError {
     let payload = serde_json::from_str::<Value>(body)
         .unwrap_or_else(|_| serde_json::json!({"message": body}));
     GatewayError::Upstream {
