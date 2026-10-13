@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::reasoning::ReasoningCapability;
+use super::resolver::normalize_model_name;
 use crate::config::{DEFAULT_MAX_INPUT_TOKENS, MODEL_CACHE_TTL, fallback_models};
 
 #[derive(Debug, Default)]
@@ -199,7 +200,11 @@ impl ModelInfoCache {
     /// assert_eq!(cache.get_max_input_tokens("m"), 123);
     /// ```
     pub fn get_max_input_tokens(&self, model_id: &str) -> u32 {
+        // Anthropic clients send raw ids (`claude-opus-5-5[1m]`) while the
+        // catalog is keyed by canonical ids (`claude-opus-5.5`); without the
+        // normalized retry the limit silently falls back to the default.
         self.get(model_id)
+            .or_else(|| self.get(&normalize_model_name(model_id)))
             .and_then(|model| model.get("tokenLimits")?.get("maxInputTokens")?.as_u64())
             .and_then(|tokens| u32::try_from(tokens).ok())
             .filter(|tokens| *tokens > 0)
@@ -376,6 +381,17 @@ mod tests {
             cache.get_max_input_tokens("unknown"),
             DEFAULT_MAX_INPUT_TOKENS
         );
+    }
+
+    #[test]
+    fn max_input_tokens_resolves_raw_client_model_ids() {
+        let cache = ModelInfoCache::default();
+        cache.update(vec![
+            json!({"modelId": "claude-opus-5.5", "tokenLimits": {"maxInputTokens": 1_000_000}}),
+        ]);
+        for raw in ["claude-opus-5.5", "claude-opus-5-5", "claude-opus-5-5[1m]"] {
+            assert_eq!(cache.get_max_input_tokens(raw), 1_000_000, "{raw}");
+        }
     }
 
     #[test]
