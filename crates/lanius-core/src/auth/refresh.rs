@@ -122,6 +122,9 @@ pub(crate) async fn refresh(
 ) -> std::result::Result<RefreshOutcome, RefreshError> {
     let refresh_token = required(&credentials.refresh_token, "Refresh token is not set")?;
     let (url, headers, payload, profile_arn) = match auth_type {
+        AuthType::ApiKey => {
+            return Err(GatewayError::Auth("API keys cannot be refreshed".into()).into());
+        }
         AuthType::KiroDesktop => (
             &endpoints.desktop_url,
             desktop_headers(),

@@ -37,10 +37,43 @@ Everything in `Credentials` is `Option` because no single source populates
 every field (a bare refresh-token setup has no `client_id`/`client_secret`
 at all).
 
+## API key (headless mode)
+
+Setting `KIRO_API_KEY` (a long-lived `ksk_...` key generated at
+app.kiro.dev, available on Pro, Pro+, Pro Max and Power plans) selects
+`AuthType::ApiKey` and short-circuits every source above: `Credentials::load`
+returns only the key, so a stale `kiro-cli` login can never be mixed in. In
+this mode:
+
+- **No lifecycle.** `access_token` returns the key as-is; there is no
+  expiry check, refresh, SQLite reload, or write-back. `force_refresh`
+  returns an error telling the user to check or regenerate the key, and the
+  upstream client does not retry a 403 (it cannot be fixed by refreshing).
+- **One extra header.** Every upstream request carries `tokentype: API_KEY`.
+  Without it Kiro treats the bearer value as an OAuth token and answers
+  `ValidationException: profileArn is required for this request`.
+- **No profile.** No `profileArn` is auto-fetched, so none is sent unless
+  `PROFILE_ARN` is set explicitly.
+- **Same hosts and request shape as OAuth.** Chat still goes to
+  `runtime.<region>.kiro.dev` and control-plane calls (models, usage,
+  `GetProfile`) to `management.<region>.kiro.dev`, with the Kiro CLI
+  `User-Agent` and `origin: KIRO_CLI`.
+- **Region-scoped.** Per the community `pi-kiro-api` client, a key used
+  against a region it was not issued for fails with `AccessDeniedException`;
+  set `KIRO_REGION` to the key's region.
+
+Verified against a live key (Power plan, `us-east-1`): chat (streaming and
+non-streaming, OpenAI and Anthropic routes), the model catalog, and
+`usage`/`account` all work with only these differences. Observed on the wire:
+`origin` may be either `KIRO_CLI` or `AI_EDITOR`; the `tokentype` header is
+what matters; `runtime` does not implement `ListAvailableModels` but
+`management` does; and requests without the Kiro CLI `User-Agent` get a 403.
+
 ## Auth type
 
 `AuthType` is derived, never configured directly:
 
+- `AuthType::ApiKey` — a non-empty `KIRO_API_KEY` is configured.
 - `AuthType::AwsSsoOidc` — both `client_id` and `client_secret` are present
   and non-empty (IAM Identity Center / enterprise accounts).
 - `AuthType::KiroDesktop` — otherwise (the Kiro desktop app's own refresh
