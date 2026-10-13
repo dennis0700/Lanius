@@ -20,7 +20,6 @@ use serde_json::Value;
 use crate::auth::AuthManager;
 use crate::config::{BASE_RETRY_DELAY, Config, MAX_RETRIES};
 use crate::error::{GatewayError, Result, classify_network_error, enhance_kiro_error};
-use crate::utils::kiro_headers;
 
 // Total request timeout for non-streaming calls; streaming calls
 // deliberately have no total timeout (see `client_timeouts`) since a
@@ -249,7 +248,7 @@ impl KiroHttpClient {
             };
             let target_url = append_query(url, params.as_deref())?;
             let mut headers = reqwest::header::HeaderMap::new();
-            for (name, value) in kiro_headers(&token) {
+            for (name, value) in self.auth_manager.chat_headers(&token) {
                 if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
                     headers.insert(name, value);
                 }
@@ -273,6 +272,18 @@ impl KiroHttpClient {
                 Ok(response) if response.status() == StatusCode::FORBIDDEN => {
                     let error_body = response.text().await.unwrap_or_default();
                     last_upstream = Some((StatusCode::FORBIDDEN, error_body));
+                    if self.auth_manager.is_api_key() {
+                        // A static API key cannot be refreshed; retrying would only repeat the 403.
+                        tracing::error!("upstream rejected KIRO_API_KEY (403)");
+                        return Err(self
+                            .auth_manager
+                            .force_refresh()
+                            .await
+                            .err()
+                            .unwrap_or_else(|| {
+                                GatewayError::Internal("API key unexpectedly refreshed".into())
+                            }));
+                    }
                     tracing::warn!(
                         attempt = attempt + 1,
                         "upstream returned 403; forcing token refresh"

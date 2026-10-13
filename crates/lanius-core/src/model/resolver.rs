@@ -397,9 +397,7 @@ pub async fn fetch_available_models(auth: Arc<AuthManager>, config: &Config) -> 
     let token = auth.access_token().await.ok()?;
     let client = KiroHttpClient::new(auth.clone(), config).ok()?;
     let mut headers = reqwest::header::HeaderMap::new();
-    for (name, value) in
-        crate::utils::kiro_headers_for(&token, crate::utils::API_CONTROL_PLANE_BEARER)
-    {
+    for (name, value) in auth.headers_for(&token, crate::utils::API_CONTROL_PLANE_BEARER) {
         if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
             headers.insert(name, value);
         }

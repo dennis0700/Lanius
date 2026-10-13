@@ -185,6 +185,11 @@ pub struct Config {
     /// Optional HTTP/HTTPS/SOCKS5 proxy URL used for all upstream Kiro requests.
     pub vpn_proxy_url: Option<String>,
 
+    /// Long-lived Kiro API key (`ksk_...`) for headless authentication. When
+    /// set it takes precedence over every other credential source and the
+    /// gateway never refreshes or persists tokens.
+    pub kiro_api_key: Option<String>,
+
     /// Refresh token used to authenticate with Kiro.
     pub refresh_token: Option<String>,
     /// Optional AWS IAM profile ARN associated with the refresh token.
@@ -247,6 +252,7 @@ impl Default for Config {
             server_port: DEFAULT_SERVER_PORT,
             proxy_api_key: "my-super-secret-password-123".to_string(),
             vpn_proxy_url: None,
+            kiro_api_key: None,
             refresh_token: None,
             profile_arn: None,
             region: "us-east-1".to_string(),
@@ -296,6 +302,7 @@ impl Config {
 
             vpn_proxy_url: env_string("VPN_PROXY_URL"),
 
+            kiro_api_key: env_string("KIRO_API_KEY"),
             refresh_token: env_string("REFRESH_TOKEN"),
             profile_arn: env_string("PROFILE_ARN"),
             region: env_string("KIRO_REGION").unwrap_or(d.region),
@@ -332,6 +339,23 @@ impl Config {
             model_aliases: d.model_aliases,
             hidden_from_list: d.hidden_from_list,
         }
+    }
+
+    /// Whether a non-empty Kiro API key is configured (headless mode).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::Config;
+    ///
+    /// assert!(!Config::default().uses_api_key());
+    /// let cfg = Config { kiro_api_key: Some("ksk_test".into()), ..Default::default() };
+    /// assert!(cfg.uses_api_key());
+    /// ```
+    pub fn uses_api_key(&self) -> bool {
+        self.kiro_api_key
+            .as_deref()
+            .is_some_and(|key| !key.is_empty())
     }
 
     /// Renders [`KIRO_REFRESH_URL_TEMPLATE`] for this config's region.

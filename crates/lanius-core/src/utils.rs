@@ -86,6 +86,10 @@ pub const API_SSO_OIDC: &str = "ssooidc/1.100.0";
 /// `origin` value the Kiro CLI sends in chat payloads and runtime API bodies.
 pub const KIRO_ORIGIN: &str = "KIRO_CLI";
 
+/// `tokentype` header value that tells Kiro the bearer token is an API key.
+/// Without it Kiro treats the key as an OAuth token and answers `profileArn is required`.
+pub const TOKEN_TYPE_API_KEY: &str = "API_KEY";
+
 /// `User-Agent` value the Kiro CLI sends on social-login token refresh.
 pub const KIRO_CLI_REFRESH_USER_AGENT: &str = "Kiro-CLI";
 

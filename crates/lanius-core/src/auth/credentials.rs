@@ -8,6 +8,8 @@
 //! to reload credentials mid-run (e.g. after a SQLite-backed refresh-token rotation).
 //!
 //! Priority rules, in order of precedence when multiple sources are present:
+//! 0. A Kiro API key ([`Config::kiro_api_key`]) short-circuits everything below: it is a
+//!    complete credential, so no other source is consulted.
 //! 1. A `refreshToken`/profile ARN supplied directly via environment/config
 //!    ([`Config::refresh_token`], [`Config::profile_arn`]) seeds the initial value but can
 //!    still be overwritten by a SQLite or file value if one is configured and found.
@@ -59,6 +61,7 @@ pub(crate) enum CredentialSource {
     Environment,
     File,
     Sqlite,
+    ApiKey,
 }
 
 /// The full set of credential fields the gateway may need, gathered from whichever
@@ -69,6 +72,8 @@ pub(crate) enum CredentialSource {
 /// it is never meant to be dumped wholesale into a response or log line.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Credentials {
+    /// Long-lived Kiro API key (`ksk_...`); when present it is the only credential used.
+    pub api_key: Option<String>,
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
     pub profile_arn: Option<String>,
@@ -92,6 +97,17 @@ impl Credentials {
     ///
     /// Performs local file/database I/O only; never makes a network request.
     pub(crate) fn load(config: &Config) -> Result<Self> {
+        // An API key is a complete, non-refreshable credential: when configured it wins
+        // outright and no other source (refresh token, SQLite, file) is consulted, so a
+        // stale `kiro-cli` login can never be mixed in.
+        if let Some(api_key) = config.kiro_api_key.as_ref().filter(|key| !key.is_empty()) {
+            return Ok(Self {
+                api_key: Some(api_key.clone()),
+                source: Some(CredentialSource::ApiKey),
+                ..Self::default()
+            });
+        }
+
         let mut credentials = Self {
             refresh_token: config.refresh_token.clone(),
             profile_arn: config.profile_arn.clone(),

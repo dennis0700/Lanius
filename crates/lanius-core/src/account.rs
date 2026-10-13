@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::auth::AuthManager;
 use crate::error::{GatewayError, Result, enhance_kiro_error};
 use crate::upstream::KiroHttpClient;
-use crate::utils::{API_RUNTIME, KIRO_ORIGIN, kiro_headers_for, with_query};
+use crate::utils::{API_RUNTIME, KIRO_ORIGIN, with_query};
 
 /// Fetches raw usage-limits data from Kiro's control plane using the
 /// configured account's auth.
@@ -51,7 +51,7 @@ pub async fn fetch_usage(auth: &AuthManager, http_client: &KiroHttpClient) -> Re
     query.push(("origin", KIRO_ORIGIN));
     let body = serde_json::to_vec(&payload)?;
     let mut headers = reqwest::header::HeaderMap::new();
-    for (name, value) in kiro_headers_for(&token, API_RUNTIME) {
+    for (name, value) in auth.headers_for(&token, API_RUNTIME) {
         if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
             headers.insert(name, value);
         }

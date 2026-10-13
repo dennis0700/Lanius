@@ -49,6 +49,7 @@ pub(crate) async fn run(config: Config, prompt: String, capture: Option<PathBuf>
     println!("fingerprint : {}", auth.fingerprint());
     match auth.profile_arn().await {
         Some(arn) => println!("profile arn : {arn}"),
+        None if auth.is_api_key() => println!("profile arn : (n/a — API key)"),
         None => println!("profile arn : (none — Builder ID account)"),
     }
 

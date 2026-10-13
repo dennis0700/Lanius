@@ -51,6 +51,9 @@ use refresh::{RefreshEndpoints, RefreshError, RefreshOutcome};
 /// is present: see `AuthType::from_credentials`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthType {
+    /// A long-lived Kiro API key (`KIRO_API_KEY`) sent as a bearer token with
+    /// `tokentype: API_KEY`. Never refreshed and never persisted.
+    ApiKey,
     /// The Kiro desktop app's own refresh endpoint (refresh token only, no client
     /// id/secret).
     KiroDesktop,
@@ -60,9 +63,17 @@ pub enum AuthType {
 }
 
 impl AuthType {
-    /// Picks [`AuthType::AwsSsoOidc`] when both `client_id` and `client_secret` are present
+    /// Picks [`AuthType::ApiKey`] when an API key is present; otherwise
+    /// [`AuthType::AwsSsoOidc`] when both `client_id` and `client_secret` are present
     /// and non-empty; otherwise falls back to [`AuthType::KiroDesktop`].
     fn from_credentials(credentials: &Credentials) -> Self {
+        if credentials
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Self::ApiKey;
+        }
         if credentials
             .client_id
             .as_deref()
@@ -169,6 +180,9 @@ impl AuthManager {
     /// ```
     pub async fn access_token(&self) -> Result<String> {
         let mut state = self.state.lock().await;
+        if state.auth_type == AuthType::ApiKey {
+            return api_key_token(&state.credentials);
+        }
         if let Some(token) = valid_token(&state.credentials) {
             return Ok(token.to_string());
         }
@@ -223,6 +237,9 @@ impl AuthManager {
     /// ```
     pub async fn force_refresh(&self) -> Result<String> {
         let mut state = self.state.lock().await;
+        if state.auth_type == AuthType::ApiKey {
+            return Err(api_key_rejected_error());
+        }
         match self.refresh_locked(&mut state).await {
             Ok(token) => Ok(token),
             Err(error) => refresh::into_result(error).and_then(|()| {
@@ -286,6 +303,10 @@ impl AuthManager {
     /// malformed JSON, no usable profile in the response) is logged at `warn` level and
     /// otherwise ignored — this path is a convenience, not a hard dependency.
     async fn autofetch_profile_arn(&self, token: &str) {
+        // API keys have no profile; `ListAvailableProfiles` is not part of that flow.
+        if self.config.uses_api_key() {
+            return;
+        }
         let profile_present = self
             .profile_arn()
             .await
@@ -470,6 +491,67 @@ impl AuthManager {
         crate::config::KIRO_MANAGEMENT_HOST_TEMPLATE.replace("{region}", &region)
     }
 
+    /// Whether this manager authenticates with a Kiro API key (`KIRO_API_KEY`) instead of
+    /// a refreshable OAuth session.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::Config;
+    ///
+    /// let manager = AuthManager::new(Config::default()).expect("valid config");
+    /// assert!(!manager.is_api_key());
+    /// ```
+    pub fn is_api_key(&self) -> bool {
+        self.config.uses_api_key()
+    }
+
+    /// Returns the request headers for the smithy service `api`: the Kiro CLI header set
+    /// plus `tokentype: API_KEY` when authenticating with an API key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::utils::API_RUNTIME;
+    /// use lanius_core::Config;
+    ///
+    /// let manager = AuthManager::new(Config::default()).expect("valid config");
+    /// let headers = manager.headers_for("tok", API_RUNTIME);
+    /// assert!(headers.iter().all(|(name, _)| *name != "tokentype"));
+    /// ```
+    pub fn headers_for(&self, token: &str, api: &str) -> Vec<(&'static str, String)> {
+        self.with_token_type(crate::utils::kiro_headers_for(token, api))
+    }
+
+    /// Like [`AuthManager::headers_for`], for the streaming chat API
+    /// (`GenerateAssistantResponse`), including its `x-amz-target`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::Config;
+    ///
+    /// let manager = AuthManager::new(Config::default()).expect("valid config");
+    /// let headers = manager.chat_headers("tok");
+    /// assert!(headers.iter().any(|(name, _)| *name == "x-amz-target"));
+    /// ```
+    pub fn chat_headers(&self, token: &str) -> Vec<(&'static str, String)> {
+        self.with_token_type(crate::utils::kiro_headers(token))
+    }
+
+    fn with_token_type(
+        &self,
+        mut headers: Vec<(&'static str, String)>,
+    ) -> Vec<(&'static str, String)> {
+        if self.is_api_key() {
+            headers.push(("tokentype", crate::utils::TOKEN_TYPE_API_KEY.to_string()));
+        }
+        headers
+    }
+
     /// Performs one refresh attempt while the state lock is held, with a single retry path:
     /// if refreshing OIDC credentials fails with HTTP 400 and we have a SQLite-backed
     /// credential source, we assume the SQLite file may have been rotated by another
@@ -643,6 +725,26 @@ impl AuthManager {
         tracing::warn!("no matching SQLite token key found for write-back");
         Ok(())
     }
+}
+
+/// Returns the configured API key as the bearer token, or an auth error if it vanished.
+fn api_key_token(credentials: &Credentials) -> Result<String> {
+    credentials
+        .api_key
+        .clone()
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| GatewayError::Auth("KIRO_API_KEY is empty".into()))
+}
+
+/// Error for an API key Kiro refused. Keys cannot be refreshed, so the only fix is a new
+/// key; this never echoes the key itself.
+fn api_key_rejected_error() -> GatewayError {
+    GatewayError::Auth(
+        "Kiro rejected KIRO_API_KEY. API keys cannot be refreshed: check that the key is \
+         valid, not revoked, and issued for the configured KIRO_REGION, or generate a new one \
+         at https://app.kiro.dev."
+            .into(),
+    )
 }
 
 /// Determines the effective API region, preferring a region detected from a profile ARN,
@@ -1066,6 +1168,97 @@ mod tests {
         assert!(
             ProfileArnAutofetchHook::profile_from_response(&serde_json::json!({"profiles":[]}))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn api_key_takes_priority_over_every_other_source() {
+        let config = Config {
+            kiro_api_key: Some("ksk_test".into()),
+            refresh_token: Some("refresh".into()),
+            kiro_cli_db_file: Some(std::path::PathBuf::from("/nonexistent/data.sqlite3")),
+            ..Config::default()
+        };
+        let credentials = Credentials::load(&config).unwrap();
+        assert_eq!(credentials.api_key.as_deref(), Some("ksk_test"));
+        assert_eq!(credentials.refresh_token, None);
+        assert_eq!(credentials.source, Some(CredentialSource::ApiKey));
+        assert_eq!(AuthType::from_credentials(&credentials), AuthType::ApiKey);
+    }
+
+    #[test]
+    fn empty_api_key_is_ignored() {
+        let config = Config {
+            kiro_api_key: Some(String::new()),
+            refresh_token: Some("refresh".into()),
+            ..Config::default()
+        };
+        let credentials = Credentials::load(&config).unwrap();
+        assert_eq!(credentials.api_key, None);
+        assert_eq!(credentials.refresh_token.as_deref(), Some("refresh"));
+    }
+
+    #[tokio::test]
+    async fn api_key_mode_returns_key_without_refresh_and_keeps_kiro_hosts() {
+        let auth = AuthManager::new(Config {
+            kiro_api_key: Some("ksk_test".into()),
+            region: "eu-central-1".into(),
+            ..Config::default()
+        })
+        .unwrap();
+        assert_eq!(auth.auth_type().await, AuthType::ApiKey);
+        assert_eq!(auth.access_token().await.unwrap(), "ksk_test");
+        assert_eq!(auth.access_token_and_autofetch().await.unwrap(), "ksk_test");
+        assert_eq!(auth.profile_arn().await, None);
+        assert_eq!(
+            auth.api_host().await,
+            "https://runtime.eu-central-1.kiro.dev"
+        );
+        assert_eq!(
+            auth.control_plane_host().await,
+            "https://management.eu-central-1.kiro.dev"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_key_force_refresh_fails_without_leaking_the_key() {
+        let auth = AuthManager::new(Config {
+            kiro_api_key: Some("ksk_super_secret".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let error = auth.force_refresh().await.unwrap_err();
+        assert!(!error.to_string().contains("ksk_super_secret"));
+        assert!(!error.user_message().contains("ksk_super_secret"));
+        assert!(error.to_string().contains("KIRO_API_KEY"));
+    }
+
+    #[test]
+    fn api_key_headers_carry_token_type_only_in_api_key_mode() {
+        let key_auth = AuthManager::new(Config {
+            kiro_api_key: Some("ksk_test".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let oauth_auth = AuthManager::new(Config::default()).unwrap();
+        let has = |headers: &[(&'static str, String)], name: &str, value: &str| {
+            headers.iter().any(|(k, v)| *k == name && v == value)
+        };
+        let key_headers = key_auth.chat_headers("ksk_test");
+        assert!(has(&key_headers, "tokentype", "API_KEY"));
+        assert!(has(&key_headers, "Authorization", "Bearer ksk_test"));
+        assert!(has(
+            &key_headers,
+            "x-amz-target",
+            "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+        ));
+        let oauth_headers = oauth_auth.chat_headers("tok");
+        assert!(oauth_headers.iter().all(|(k, _)| *k != "tokentype"));
+        assert!(
+            oauth_auth
+                .headers_for("tok", crate::utils::API_RUNTIME)
+                .iter()
+                .all(|(k, _)| *k != "tokentype")
         );
     }
 

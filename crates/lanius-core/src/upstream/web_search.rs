@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use super::client::{KiroHttpClient, retry_delay, upstream_error_from_body};
 use crate::config::MAX_RETRIES;
 use crate::error::{GatewayError, Result, classify_network_error};
-use crate::utils::{API_RUNTIME, API_STREAMING, kiro_headers_for};
+use crate::utils::{API_RUNTIME, API_STREAMING};
 
 const INVOKE_MCP_TARGET: &str = "AmazonCodeWhispererStreamingService.InvokeMCP";
 const GET_PROFILE_TARGET: &str = "AmazonCodeWhispererService.GetProfile";
@@ -175,7 +175,7 @@ impl KiroHttpClient {
         let body = serde_json::to_vec(&json!({"profileArn": arn}))?;
         let token = auth.access_token_and_autofetch().await?;
         let mut request = self.client().post(url).body(body);
-        for (name, value) in kiro_headers_for(&token, API_RUNTIME) {
+        for (name, value) in auth.headers_for(&token, API_RUNTIME) {
             request = request.header(name, value);
         }
         let response = request
@@ -262,7 +262,7 @@ impl KiroHttpClient {
         for attempt in 0..MAX_RETRIES {
             let token = auth.access_token_and_autofetch().await?;
             let mut request = self.client().post(&url).body(body.clone());
-            for (name, value) in kiro_headers_for(&token, API_STREAMING) {
+            for (name, value) in auth.headers_for(&token, API_STREAMING) {
                 request = request.header(name, value);
             }
             request = request.header("x-amz-target", INVOKE_MCP_TARGET);
