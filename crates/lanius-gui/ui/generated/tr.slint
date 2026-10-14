@@ -13,7 +13,9 @@ export global Tr {
     in-out property <string> auth_refresh_token: "Refresh Token";
     in-out property <string> auth_creds_file: "Credentials File";
     in-out property <string> auth_cli_db: "Kiro CLI Database";
+    in-out property <string> auth_api_key: "Kiro API Key";
     in-out property <string> refresh_token: "Refresh Token";
+    in-out property <string> kiro_api_key: "Kiro API Key";
     in-out property <string> proxy_api_key: "API Key";
     in-out property <string> save_failed: "Failed to save settings";
     in-out property <string> loading_config: "Loading configuration...";
@@ -58,6 +60,7 @@ export global Tr {
     in-out property <string> tooltip_auth_cli_db: "Authenticate using credentials from the Kiro CLI local SQLite database";
     in-out property <string> tooltip_auth_creds_file: "Authenticate using a JSON credentials file from the AWS SSO cache";
     in-out property <string> tooltip_auth_refresh_token: "Authenticate directly with a refresh token (manual input)";
+    in-out property <string> tooltip_auth_api_key: "Authenticate with a long-lived Kiro API key (ksk_...) generated at app.kiro.dev; never refreshed";
     in-out property <string> tooltip_proxy_api_key: "A secret key clients must include when connecting to protect the API endpoint";
     in-out property <string> tooltip_generate: "Randomly generate a secure API key with sk- prefix";
     in-out property <string> tooltip_show_key: "Show the real key";
