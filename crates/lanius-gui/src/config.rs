@@ -22,6 +22,7 @@ pub enum AuthMethod {
     RefreshToken,
     CredsFile,
     CliDb,
+    ApiKey,
 }
 
 impl AuthMethod {
@@ -40,6 +41,7 @@ impl AuthMethod {
             AuthMethod::RefreshToken => "refresh_token",
             AuthMethod::CredsFile => "creds_file",
             AuthMethod::CliDb => "cli_db",
+            AuthMethod::ApiKey => "api_key",
         }
     }
 
@@ -59,6 +61,7 @@ impl AuthMethod {
         match raw {
             "creds_file" => AuthMethod::CredsFile,
             "cli_db" => AuthMethod::CliDb,
+            "api_key" => AuthMethod::ApiKey,
             _ => AuthMethod::RefreshToken,
         }
     }
@@ -75,6 +78,9 @@ pub struct AppConfig {
     pub refresh_token: Option<String>,
     pub kiro_creds_file: Option<String>,
     pub kiro_cli_db_file: Option<String>,
+    /// Long-lived Kiro API key (`ksk_...`), used when `auth_method` is `ApiKey`.
+    #[serde(default)]
+    pub kiro_api_key: Option<String>,
 
     pub proxy_api_key: String,
 
@@ -120,6 +126,7 @@ impl Default for AppConfig {
             refresh_token: None,
             kiro_creds_file: None,
             kiro_cli_db_file: None,
+            kiro_api_key: None,
             proxy_api_key: String::new(),
             server_host: "127.0.0.1".to_string(),
             server_port: 18000,
@@ -163,6 +170,7 @@ impl AppConfig {
                 .kiro_cli_db_file
                 .as_ref()
                 .is_some_and(|d| !d.is_empty()),
+            AuthMethod::ApiKey => self.kiro_api_key.as_ref().is_some_and(|k| !k.is_empty()),
         }
     }
 
@@ -403,7 +411,8 @@ fn existing_paths(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<String> 
 ///
 /// This never overwrites an existing credential the user has already
 /// configured; auto-discovery only kicks in when `refresh_token`,
-/// `kiro_creds_file`, and `kiro_cli_db_file` are all empty/absent. A
+/// `kiro_creds_file`, `kiro_cli_db_file`, and `kiro_api_key` are all
+/// empty/absent. A
 /// credential-scan failure (e.g. home directory undeterminable) is logged
 /// as a warning and treated as "nothing found" rather than propagated,
 /// since bootstrap must be able to proceed even without auto-discovered
@@ -438,7 +447,8 @@ pub fn ensure_defaults(config: &mut AppConfig) -> bool {
         || config
             .kiro_cli_db_file
             .as_ref()
-            .is_some_and(|v| !v.is_empty());
+            .is_some_and(|v| !v.is_empty())
+        || config.kiro_api_key.as_ref().is_some_and(|v| !v.is_empty());
 
     if !has_credential {
         match scan_all_credentials() {
@@ -491,6 +501,28 @@ mod tests {
         assert!(!cfg.has_credentials());
         cfg.kiro_cli_db_file = Some("/tmp/data.sqlite3".into());
         assert!(cfg.has_credentials());
+
+        cfg.auth_method = AuthMethod::ApiKey;
+        assert!(!cfg.has_credentials());
+        cfg.kiro_api_key = Some(String::new());
+        assert!(!cfg.has_credentials(), "empty key is not a credential");
+        cfg.kiro_api_key = Some("ksk_test".into());
+        assert!(cfg.has_credentials());
+    }
+
+    #[test]
+    fn configured_api_key_suppresses_credential_auto_discovery() {
+        let mut cfg = AppConfig {
+            auth_method: AuthMethod::ApiKey,
+            kiro_api_key: Some("ksk_test".into()),
+            client_id: Some("cid".into()),
+            proxy_api_key: "sk-key".into(),
+            ..Default::default()
+        };
+        assert!(!ensure_defaults(&mut cfg), "nothing to fill in");
+        assert_eq!(cfg.auth_method, AuthMethod::ApiKey);
+        assert_eq!(cfg.kiro_cli_db_file, None);
+        assert_eq!(cfg.kiro_creds_file, None);
     }
 
     #[test]
@@ -548,6 +580,7 @@ mod tests {
         assert_eq!(cfg.auth_method, AuthMethod::CliDb);
         assert_eq!(cfg.server_port, 8123);
         assert_eq!(cfg.language, None);
+        assert_eq!(cfg.kiro_api_key, None);
     }
 
     #[tokio::test]
@@ -600,6 +633,7 @@ mod tests {
             AuthMethod::RefreshToken,
             AuthMethod::CredsFile,
             AuthMethod::CliDb,
+            AuthMethod::ApiKey,
         ] {
             assert_eq!(AuthMethod::from_str_or_default(method.as_str()), method);
         }

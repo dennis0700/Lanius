@@ -43,6 +43,7 @@ pub fn form_from_config(config: &AppConfig) -> ConfigForm {
         refresh_token: shared(config.refresh_token.as_ref()),
         creds_file: shared(config.kiro_creds_file.as_ref()),
         cli_db_file: shared(config.kiro_cli_db_file.as_ref()),
+        kiro_api_key: shared(config.kiro_api_key.as_ref()),
         proxy_api_key: config.proxy_api_key.as_str().into(),
         lan_access: config.server_host == "0.0.0.0",
         server_port: config.server_port.to_string().into(),
@@ -106,6 +107,7 @@ pub fn apply_form(config: &AppConfig, form: &ConfigForm) -> AppConfig {
         refresh_token: optional(form.refresh_token.as_str()),
         kiro_creds_file: optional(form.creds_file.as_str()),
         kiro_cli_db_file: optional(form.cli_db_file.as_str()),
+        kiro_api_key: optional(form.kiro_api_key.as_str()),
         proxy_api_key: form.proxy_api_key.trim().to_string(),
         server_host: if form.lan_access {
             "0.0.0.0".to_string()
@@ -322,9 +324,24 @@ mod tests {
         let mut form = form_from_config(&config);
         form.refresh_token = "   ".into();
         form.creds_file = "".into();
+        form.kiro_api_key = "  ".into();
         let updated = apply_form(&config, &form);
         assert_eq!(updated.refresh_token, None);
         assert_eq!(updated.kiro_creds_file, None);
+        assert_eq!(updated.kiro_api_key, None);
+    }
+
+    #[test]
+    fn api_key_round_trips_through_the_form() {
+        let config = AppConfig {
+            auth_method: AuthMethod::ApiKey,
+            kiro_api_key: Some("ksk_test".into()),
+            ..Default::default()
+        };
+        let form = form_from_config(&config);
+        assert_eq!(form.auth_method, "api_key");
+        assert_eq!(form.kiro_api_key, "ksk_test");
+        assert_eq!(apply_form(&config, &form), config);
     }
 
     #[test]

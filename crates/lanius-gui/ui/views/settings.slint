@@ -177,6 +177,16 @@ export component SettingsView {
                             root.form-changed();
                         }
                     }
+                    AuthOption {
+                        selected: root.form.auth_method == "api_key";
+                        icon: Icon.shield;
+                        label: Tr.auth_api_key;
+                        hint: Tr.tooltip_auth_api_key;
+                        clicked => {
+                            root.form.auth_method = "api_key";
+                            root.form-changed();
+                        }
+                    }
                 }
 
                 Inset {
@@ -226,6 +236,22 @@ export component SettingsView {
                             password: true;
                             edited(value) => {
                                 root.form.refresh_token = value;
+                                root.form-changed();
+                            }
+                        }
+
+                        if root.form.auth_method == "api_key": Text {
+                            text: Tr.kiro_api_key;
+                            color: Theme.palette.text_primary;
+                            font-size: Theme.typography.size_base;
+                            font-weight: 600;
+                        }
+                        if root.form.auth_method == "api_key": TextField {
+                            text: root.form.kiro_api_key;
+                            placeholder: "ksk_...";
+                            password: true;
+                            edited(value) => {
+                                root.form.kiro_api_key = value;
                                 root.form-changed();
                             }
                         }

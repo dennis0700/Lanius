@@ -54,7 +54,9 @@ pub fn apply(tr: &Tr, lookup: impl Fn(&str) -> SharedString) {
     tr.set_auth_refresh_token(lookup("authRefreshToken"));
     tr.set_auth_creds_file(lookup("authCredsFile"));
     tr.set_auth_cli_db(lookup("authCliDb"));
+    tr.set_auth_api_key(lookup("authApiKey"));
     tr.set_refresh_token(lookup("refreshToken"));
+    tr.set_kiro_api_key(lookup("kiroApiKey"));
     tr.set_proxy_api_key(lookup("proxyApiKey"));
     tr.set_save_failed(lookup("saveFailed"));
     tr.set_loading_config(lookup("loadingConfig"));
@@ -99,6 +101,7 @@ pub fn apply(tr: &Tr, lookup: impl Fn(&str) -> SharedString) {
     tr.set_tooltip_auth_cli_db(lookup("tooltip_auth_cli_db"));
     tr.set_tooltip_auth_creds_file(lookup("tooltip_auth_creds_file"));
     tr.set_tooltip_auth_refresh_token(lookup("tooltip_auth_refresh_token"));
+    tr.set_tooltip_auth_api_key(lookup("tooltip_auth_api_key"));
     tr.set_tooltip_proxy_api_key(lookup("tooltip_proxy_api_key"));
     tr.set_tooltip_generate(lookup("tooltip_generate"));
     tr.set_tooltip_show_key(lookup("tooltip_show_key"));

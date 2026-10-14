@@ -287,6 +287,9 @@ fn build_gateway_config(app: &AppConfig) -> Result<lanius_core::Config, String> 
             // Kiro CLI); Lanius must never write to it, only read from it.
             cfg.sqlite_readonly = true;
         }
+        AuthMethod::ApiKey => {
+            cfg.kiro_api_key = non_empty(app.kiro_api_key.as_deref());
+        }
     }
 
     cfg.debug_dir = data_dir.join("debug_logs");
@@ -396,6 +399,25 @@ mod tests {
         let cfg = build_gateway_config(&app).expect("mapping should succeed");
         assert_eq!(cfg.refresh_token.as_deref(), Some("tok"));
         assert!(cfg.kiro_creds_file.is_none());
+    }
+
+    #[test]
+    fn api_key_auth_passes_only_the_key() {
+        let mut app = base_config();
+        app.auth_method = AuthMethod::ApiKey;
+        app.kiro_api_key = Some("  ksk_test  ".to_string());
+        app.refresh_token = Some("stale".to_string());
+        app.kiro_cli_db_file = Some("/tmp/kiro.db".to_string());
+
+        let cfg = build_gateway_config(&app).expect("mapping should succeed");
+        assert_eq!(cfg.kiro_api_key.as_deref(), Some("ksk_test"));
+        assert!(cfg.uses_api_key());
+        assert!(cfg.refresh_token.is_none());
+        assert!(cfg.kiro_cli_db_file.is_none());
+
+        app.kiro_api_key = Some("   ".to_string());
+        let cfg = build_gateway_config(&app).expect("mapping should succeed");
+        assert!(cfg.kiro_api_key.is_none(), "blank key is not configured");
     }
 
     #[test]
