@@ -94,6 +94,7 @@ for the full, authoritative list and defaults:
 | `PROXY_API_KEY` | Bearer key clients must present to Lanius. Required, must not be empty. |
 | `KIRO_REGION` | AWS region used to build Kiro/OIDC endpoint URLs. |
 | `SERVER_HOST` / `SERVER_PORT` | Bind address for the gateway's HTTP server. |
+| `KIRO_API_KEY` | Kiro API key (`ksk_...`) for headless servers/CI. Overrides all other credential sources; must match `KIRO_REGION`. |
 | `REFRESH_TOKEN` / `PROFILE_ARN` | Refresh token and (optional) profile ARN used to authenticate with Kiro. |
 | `KIRO_CREDS_FILE` / `KIRO_CLI_DB_FILE` | Alternative credential sources (JSON file / Kiro CLI's SQLite DB). |
 | `LOG_LEVEL` / `DEBUG_MODE` | Logging verbosity and optional request/response debug capture. |
