@@ -120,6 +120,19 @@ Notes:
 
 Pick one source (the precedence order is described in [auth.md](auth.md)):
 
+- **`KIRO_API_KEY`** (recommended for servers): a `ksk_...` key generated at
+  [app.kiro.dev](https://app.kiro.dev), set directly in `lanius.env` in place
+  of `KIRO_CREDS_FILE`:
+
+  ```ini
+  KIRO_REGION=us-east-1   # must match the region the key was issued for
+  KIRO_API_KEY=ksk_xxxxxxxx
+  ```
+
+  It overrides every other source below, is never refreshed or written to
+  disk, and needs no credentials file, so the token write-back notes below
+  don't apply. A `upstream rejected KIRO_API_KEY (403)` log line means the key
+  is invalid/revoked or `KIRO_REGION` doesn't match.
 - **`REFRESH_TOKEN`** (plus optional `PROFILE_ARN`) set directly in
   `lanius.env`.
 - **`KIRO_CREDS_FILE`**: copy the JSON token file from a machine where you're

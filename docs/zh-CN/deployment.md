@@ -116,6 +116,17 @@ LOG_LEVEL=INFO
 
 任选一种来源（优先级顺序见 [auth.md](auth.md)）：
 
+- **`KIRO_API_KEY`**（服务器推荐）：在 [app.kiro.dev](https://app.kiro.dev) 生成的
+  `ksk_...` key，直接写在 `lanius.env` 中，替代 `KIRO_CREDS_FILE`：
+
+  ```ini
+  KIRO_REGION=us-east-1   # 必须与 key 签发时所在的区域一致
+  KIRO_API_KEY=ksk_xxxxxxxx
+  ```
+
+  它会覆盖下面所有其他来源，不会被刷新或写入磁盘，也不需要凭据文件，因此下文关于
+  token 回写的说明不适用。日志中出现 `upstream rejected KIRO_API_KEY (403)` 表示
+  key 无效/已吊销，或 `KIRO_REGION` 不匹配。
 - **`REFRESH_TOKEN`**（可选搭配 `PROFILE_ARN`）：直接写在 `lanius.env` 中。
 - **`KIRO_CREDS_FILE`**：从已登录的机器上复制 JSON token 文件（Kiro 默认位置为
   `~/.aws/sso/cache/kiro-auth-token.json`）：
