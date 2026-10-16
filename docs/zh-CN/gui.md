@@ -45,7 +45,7 @@ ui/              Slint UI definitions (.slint files)
 
 `ServerManager`（位于 `server.rs`）封装了 `lanius_core::server::spawn`/`GatewayHandle`（参见 `crates/lanius-core/src/server.rs`），用于启动/停止网关，并跟踪展示给 UI 的 `ServerStatus`（`"stopped"`/`"starting"`/`"running"`/`"error"`，以及绑定的端口和可能的错误信息）。
 
-`build_gateway_config` 是转换层，负责把 GUI 自身的 `AppConfig`（它还额外建模了诸如“选择了哪种认证方式”这类 `lanius_core::Config` 无需直接了解的内容）转换为核心网关能够理解的实际 `lanius_core::Config`。只会复制所选认证方式对应的凭证字段：Kiro CLI 数据库、凭证文件、刷新令牌或 Kiro API Key（`ksk_...`，映射到 `kiro_api_key`，参见 [auth.md](auth.md)）。
+`build_gateway_config` 是转换层，负责把 GUI 自身的 `AppConfig`（它还额外建模了诸如“选择了哪种认证方式”这类 `lanius_core::Config` 无需直接了解的内容）转换为核心网关能够理解的实际 `lanius_core::Config`。只会复制所选认证方式对应的凭证字段：Kiro CLI 数据库、凭证文件、刷新令牌或 Kiro API Key（`ksk_...`，映射到 `kiro_api_key`，参见 [auth.md](auth.md)）。API Key 输入框支持单个 Key 或逗号分隔的 Key 列表，与 CLI 使用相同的会话哈希分配及失败切换逻辑。
 
 这里产生的状态/日志消息与 `log_capture.rs` 基于 `tracing` 的捕获共用同一个 `LogBuffer`，因此网关生命周期事件（已启动、已停止、端口冲突等）会与运行中网关产生的普通 `tracing::info!`/`warn!`/`error!` 日志行一起显示在 GUI 的日志视图中。
 

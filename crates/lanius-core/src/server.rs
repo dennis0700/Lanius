@@ -253,6 +253,7 @@ fn local_cors() -> CorsLayer {
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             axum::http::HeaderName::from_static("x-api-key"),
+            axum::http::HeaderName::from_static("x-session-id"),
             axum::http::HeaderName::from_static("anthropic-version"),
         ]))
 }

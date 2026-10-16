@@ -25,7 +25,7 @@ Lanius 完全通过环境变量进行配置（如果工作目录中存在 `.env`
 
 | 变量 | 默认值 | 用途 |
 |---|---|---|
-| `KIRO_API_KEY` | 未设置 | 用于 headless/CI 的 Kiro API key（`ksk_...`）。设置后会覆盖所有其他凭据来源，不会被刷新或持久化；Lanius 会加上 `tokentype: API_KEY` 头并跳过 profile ARN 查询（参见 [auth.md](auth.md)）。Key 与区域绑定：请把 `KIRO_REGION` 设为该 key 签发时所在的区域。 |
+| `KIRO_API_KEY` | 未设置 | 用于 headless/CI 的 Kiro API Key（`ksk_...`），多个 Key 用逗号分隔。按 `x-session-id`、OpenAI `user`、Anthropic `metadata.user_id` 或首条消息哈希后分配并保持会话粘性；上游认证、网络、限流、5xx 或首段流建立失败时尝试其他 Key。Key 会覆盖其他凭据来源，不会被刷新或持久化；所有 Key 必须属于同一个 `KIRO_REGION`。 |
 | `REFRESH_TOKEN` | 未设置 | 用于向 Kiro 认证的 refresh token（作为 `Credentials` 的初始值；可能被文件/SQLite 来源覆盖）。 |
 | `PROFILE_ARN` | 未设置 | 与该 refresh token 关联的可选 AWS IAM profile ARN。 |
 | `KIRO_CREDS_FILE` | 未设置 | Kiro 桌面版 JSON 凭据文件的路径（会展开 `~`）。 |

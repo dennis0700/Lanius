@@ -133,6 +133,18 @@ Pick one source (the precedence order is described in [auth.md](auth.md)):
   disk, and needs no credentials file, so the token write-back notes below
   don't apply. A `upstream rejected KIRO_API_KEY (403)` log line means the key
   is invalid/revoked or `KIRO_REGION` doesn't match.
+- **Multiple API keys**: put comma-separated keys in `KIRO_API_KEY`. Requests
+  are assigned by a hash of their session identifier and stay
+  on that key; an upstream authentication, network, rate-limit, server, or
+  first-stream failure advances the session to another key:
+
+  ```ini
+  KIRO_REGION=us-east-1
+  KIRO_API_KEY=ksk_first,ksk_second,ksk_third
+  ```
+
+  Supply keys from the same region. Send `x-session-id` for explicit affinity; OpenAI `user`,
+  Anthropic `metadata.user_id`, or the first user message provide fallbacks.
 - **`REFRESH_TOKEN`** (plus optional `PROFILE_ARN`) set directly in
   `lanius.env`.
 - **`KIRO_CREDS_FILE`**: copy the JSON token file from a machine where you're

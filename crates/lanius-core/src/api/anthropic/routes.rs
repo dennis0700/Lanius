@@ -50,7 +50,7 @@ use crate::truncation::{
     TruncationStore, generate_truncation_user_message, prepend_tool_recovery_notice,
 };
 use crate::upstream::KiroHttpClient;
-use crate::utils::{HashableMessage, generate_conversation_id};
+use crate::utils::{HashableMessage, generate_conversation_id, hash_affinity_key};
 
 /// Shared axum state for the Anthropic routes: gateway config, the shared
 /// [`AuthManager`] and model catalog cache, and the truncation-recovery
@@ -104,17 +104,35 @@ async fn messages(
         return empty_messages_response();
     }
     apply_truncation_recovery(&mut request, &state.truncation_store, &state.config);
+    let conversation_id = conversation_id(&request);
+    let affinity_id = api_key_affinity_id(&headers, &request, &conversation_id);
+    let (active_key_index, initial_auth) = match state
+        .auth_manager
+        .api_key_manager_for_session(&affinity_id)
+        .await
+    {
+        Ok(Some((index, auth))) => (Some(index), auth),
+        Ok(None) => (None, state.auth_manager.clone()),
+        Err(error) => return gateway_error_response(&error),
+    };
 
     let web_tools_allowed = request
         .tools
         .as_deref()
         .is_some_and(|tools| tools.iter().any(is_web_search_tool))
-        && web_tools_allowed(&state).await;
+        && web_tools_allowed(&initial_auth, &state.config).await;
     if is_search_subrequest(&request) {
         if !web_tools_allowed {
             return web_tools_disabled_response();
         }
-        return native_web_search(&state, &request).await;
+        return native_web_search(
+            &state,
+            &request,
+            &affinity_id,
+            active_key_index,
+            initial_auth,
+        )
+        .await;
     }
     let max_searches = if web_tools_allowed {
         replace_server_tool(&mut request)
@@ -127,18 +145,25 @@ async fn messages(
         Ok(input) => input,
         Err(error) => return gateway_error_response(&error),
     };
-    let conversation_id = conversation_id(&request);
-    let prepared = match prepare_request(&state, &request, &conversation_id).await {
-        Ok(prepared) => prepared,
+    let (prepared, active_auth) = match prepare_with_failover(
+        &state,
+        &request,
+        &conversation_id,
+        &affinity_id,
+        active_key_index,
+        initial_auth,
+    )
+    .await
+    {
+        Ok(result) => result,
         Err(error) if error.is_context_limit() => {
             let limit = state.model_cache.get_max_input_tokens(&request.model);
             return context_limit_response(token_input.estimate(true), limit, &error);
         }
         Err(error) => return gateway_error_response(&error),
     };
-
     let search = SearchLoop {
-        auth: state.auth_manager.clone(),
+        auth: active_auth,
         config: state.config.clone(),
         max_searches,
     };
@@ -322,12 +347,12 @@ struct PreparedRequest {
 /// aliases).
 async fn prepare_request(
     state: &AnthropicState,
+    auth: &Arc<AuthManager>,
     request: &AnthropicMessagesRequest,
     conversation_id: &str,
 ) -> Result<PreparedRequest> {
-    state.auth_manager.access_token_and_autofetch().await?;
-    let profile = state
-        .auth_manager
+    auth.access_token_and_autofetch().await?;
+    let profile = auth
         .profile_arn()
         .await
         .or_else(|| state.config.profile_arn.clone());
@@ -341,7 +366,7 @@ async fn prepare_request(
         &mut tool_name_aliases,
     )?
     .payload;
-    let source = open_chat_stream(state.auth_manager.clone(), &state.config, &payload).await?;
+    let source = open_chat_stream(auth.clone(), &state.config, &payload).await?;
     Ok(PreparedRequest {
         source,
         payload,
@@ -349,10 +374,87 @@ async fn prepare_request(
     })
 }
 
+async fn prepare_with_failover(
+    state: &AnthropicState,
+    request: &AnthropicMessagesRequest,
+    conversation_id: &str,
+    affinity_id: &str,
+    mut key_index: Option<usize>,
+    mut auth: Arc<AuthManager>,
+) -> Result<(PreparedRequest, Arc<AuthManager>)> {
+    let mut attempted = Vec::new();
+    loop {
+        if let Some(index) = key_index {
+            attempted.push(index);
+        }
+        match prepare_request(state, &auth, request, conversation_id).await {
+            Ok(prepared) => {
+                if let Some(index) = key_index {
+                    state
+                        .auth_manager
+                        .remember_api_key_session(affinity_id, index)
+                        .await;
+                }
+                return Ok((prepared, auth));
+            }
+            Err(error) if error.should_failover_api_key() && key_index.is_some() => {
+                match state
+                    .auth_manager
+                    .failover_api_key_manager(key_index.expect("checked above"), &attempted)
+                    .await?
+                {
+                    Some((index, next_auth)) => {
+                        tracing::warn!(
+                            from_key = key_index.unwrap_or_default() + 1,
+                            to_key = index + 1,
+                            "upstream request failed; switching API key for this session"
+                        );
+                        key_index = Some(index);
+                        auth = next_auth;
+                    }
+                    None => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn api_key_affinity_id(
+    headers: &HeaderMap,
+    request: &AnthropicMessagesRequest,
+    fallback: &str,
+) -> String {
+    let header_id = headers
+        .get("x-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let user_id = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("user_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let first_user_message = request
+        .messages
+        .iter()
+        .find(|message| message.role == AnthropicMessageRole::User)
+        .or_else(|| request.messages.first())
+        .and_then(|message| serde_json::to_string(message).ok());
+    hash_affinity_key(
+        header_id
+            .or(user_id)
+            .or(first_user_message.as_deref())
+            .unwrap_or(fallback),
+    )
+}
+
 /// Whether the account's Kiro profile allows web tools (see
 /// [`KiroHttpClient::web_tools_enabled`]).
-async fn web_tools_allowed(state: &AnthropicState) -> bool {
-    match KiroHttpClient::new(state.auth_manager.clone(), &state.config) {
+async fn web_tools_allowed(auth: &Arc<AuthManager>, config: &Config) -> bool {
+    match KiroHttpClient::new(auth.clone(), config) {
         Ok(client) => client.web_tools_enabled().await,
         Err(_) => true,
     }
@@ -370,7 +472,13 @@ fn web_tools_disabled_response() -> Response {
 
 /// Answers a WebSearch sub-request (only server `web_search` tools offered)
 /// from Kiro's native MCP search, without involving the model.
-async fn native_web_search(state: &AnthropicState, request: &AnthropicMessagesRequest) -> Response {
+async fn native_web_search(
+    state: &AnthropicState,
+    request: &AnthropicMessagesRequest,
+    affinity_id: &str,
+    mut key_index: Option<usize>,
+    mut auth: Arc<AuthManager>,
+) -> Response {
     let Some(query) = extract_query(request) else {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -382,14 +490,47 @@ async fn native_web_search(state: &AnthropicState, request: &AnthropicMessagesRe
         Ok(input) => input.estimate(true),
         Err(error) => return gateway_error_response(&error),
     };
-    let client = match KiroHttpClient::new(state.auth_manager.clone(), &state.config) {
-        Ok(client) => client,
-        Err(error) => return gateway_error_response(&error),
-    };
-    match client.web_search(&query).await {
-        Ok(response) => WebSearchAnswer::new(&request.model, query, &response, input_tokens)
-            .into_response(request.stream),
-        Err(error) => gateway_error_response(&error),
+    let mut attempted = Vec::new();
+    loop {
+        if let Some(index) = key_index {
+            attempted.push(index);
+        }
+        let client = match KiroHttpClient::new(auth.clone(), &state.config) {
+            Ok(client) => client,
+            Err(error) => return gateway_error_response(&error),
+        };
+        match client.web_search(&query).await {
+            Ok(response) => {
+                if let Some(index) = key_index {
+                    state
+                        .auth_manager
+                        .remember_api_key_session(affinity_id, index)
+                        .await;
+                }
+                return WebSearchAnswer::new(&request.model, query, &response, input_tokens)
+                    .into_response(request.stream);
+            }
+            Err(error) if error.should_failover_api_key() && key_index.is_some() => {
+                match state
+                    .auth_manager
+                    .failover_api_key_manager(key_index.expect("checked above"), &attempted)
+                    .await
+                {
+                    Ok(Some((index, next_auth))) => {
+                        tracing::warn!(
+                            from_key = key_index.unwrap_or_default() + 1,
+                            to_key = index + 1,
+                            "web search failed; switching API key for this session"
+                        );
+                        key_index = Some(index);
+                        auth = next_auth;
+                    }
+                    Ok(None) => return gateway_error_response(&error),
+                    Err(error) => return gateway_error_response(&error),
+                }
+            }
+            Err(error) => return gateway_error_response(&error),
+        }
     }
 }
 
