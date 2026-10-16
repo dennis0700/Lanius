@@ -8,8 +8,9 @@
 //! to reload credentials mid-run (e.g. after a SQLite-backed refresh-token rotation).
 //!
 //! Priority rules, in order of precedence when multiple sources are present:
-//! 0. A Kiro API key ([`Config::kiro_api_key`]) short-circuits everything below: it is a
-//!    complete credential, so no other source is consulted.
+//! 0. A Kiro API key ([`Config::kiro_api_key`], optionally comma-separated)
+//!    short-circuits everything below: it is a complete credential, so no
+//!    other source is consulted.
 //! 1. A `refreshToken`/profile ARN supplied directly via environment/config
 //!    ([`Config::refresh_token`], [`Config::profile_arn`]) seeds the initial value but can
 //!    still be overwritten by a SQLite or file value if one is configured and found.
@@ -100,9 +101,9 @@ impl Credentials {
         // An API key is a complete, non-refreshable credential: when configured it wins
         // outright and no other source (refresh token, SQLite, file) is consulted, so a
         // stale `kiro-cli` login can never be mixed in.
-        if let Some(api_key) = config.kiro_api_key.as_ref().filter(|key| !key.is_empty()) {
+        if let Some(api_key) = config.api_keys().next() {
             return Ok(Self {
-                api_key: Some(api_key.clone()),
+                api_key: Some(api_key.to_string()),
                 source: Some(CredentialSource::ApiKey),
                 ..Self::default()
             });

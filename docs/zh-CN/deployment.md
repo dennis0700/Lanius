@@ -127,6 +127,16 @@ LOG_LEVEL=INFO
   它会覆盖下面所有其他来源，不会被刷新或写入磁盘，也不需要凭据文件，因此下文关于
   token 回写的说明不适用。日志中出现 `upstream rejected KIRO_API_KEY (403)` 表示
   key 无效/已吊销，或 `KIRO_REGION` 不匹配。
+- **多个 API Key**：在 `KIRO_API_KEY` 中用逗号分隔填写。请求按会话标识哈希分配并保持粘性；
+  上游认证、网络、限流、服务端或首段流失败时会尝试其他 Key：
+
+  ```ini
+  KIRO_REGION=us-east-1
+  KIRO_API_KEY=ksk_first,ksk_second,ksk_third
+  ```
+
+  所有 Key 必须属于同一区域。可用 `x-session-id` 显式指定会话；也会回退使用 OpenAI `user`、Anthropic
+  `metadata.user_id`，或首条 user 消息。
 - **`REFRESH_TOKEN`**（可选搭配 `PROFILE_ARN`）：直接写在 `lanius.env` 中。
 - **`KIRO_CREDS_FILE`**：从已登录的机器上复制 JSON token 文件（Kiro 默认位置为
   `~/.aws/sso/cache/kiro-auth-token.json`）：

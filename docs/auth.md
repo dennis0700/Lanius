@@ -39,16 +39,23 @@ at all).
 
 ## API key (headless mode)
 
-Setting `KIRO_API_KEY` (a long-lived `ksk_...` key generated at
-app.kiro.dev, available on Pro, Pro+, Pro Max and Power plans) selects
+Setting `KIRO_API_KEY` to a long-lived `ksk_...` key generated at
+app.kiro.dev, available on Pro, Pro+, Pro Max and Power plans, selects
 `AuthType::ApiKey` and short-circuits every source above: `Credentials::load`
-returns only the key, so a stale `kiro-cli` login can never be mixed in. In
-this mode:
+returns only the key, so a stale `kiro-cli` login can never be mixed in.
+The value may contain one key or a comma-separated list; the CLI and GUI use
+the same setting and parser. Chat requests are assigned by hashing
+`x-session-id`, OpenAI `user`, Anthropic `metadata.user_id`, or the first user
+message, and the process keeps a session on that key. If authentication,
+network, rate-limit, server, or first-stream setup fails, the request tries
+the other keys and the session assignment advances. Control-plane endpoints
+such as `/usage` continue to use the first configured key. In this mode:
 
 - **No lifecycle.** `access_token` returns the key as-is; there is no
   expiry check, refresh, SQLite reload, or write-back. `force_refresh`
-  returns an error telling the user to check or regenerate the key, and the
-  upstream client does not retry a 403 (it cannot be fixed by refreshing).
+  returns an error telling the user to check or regenerate the key. The
+  per-key upstream client does not retry a 403; the gateway request handler
+  can switch to another configured key.
 - **One extra header.** Every upstream request carries `tokentype: API_KEY`.
   Without it Kiro treats the bearer value as an OAuth token and answers
   `ValidationException: profileArn is required for this request`.
@@ -73,7 +80,7 @@ what matters; `runtime` does not implement `ListAvailableModels` but
 
 `AuthType` is derived, never configured directly:
 
-- `AuthType::ApiKey` — a non-empty `KIRO_API_KEY` is configured.
+- `AuthType::ApiKey` — a non-empty key is configured in `KIRO_API_KEY`.
 - `AuthType::AwsSsoOidc` — both `client_id` and `client_secret` are present
   and non-empty (IAM Identity Center / enterprise accounts).
 - `AuthType::KiroDesktop` — otherwise (the Kiro desktop app's own refresh
