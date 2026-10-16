@@ -29,12 +29,15 @@
 mod credentials;
 mod refresh;
 
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::compat::ProfileArnAutofetchHook;
@@ -52,7 +55,7 @@ use refresh::{RefreshEndpoints, RefreshError, RefreshOutcome};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthType {
     /// A long-lived Kiro API key (`KIRO_API_KEY`) sent as a bearer token with
-    /// `tokentype: API_KEY`. Never refreshed and never persisted.
+    /// `tokentype: API_KEY`. Never refreshed or persisted.
     ApiKey,
     /// The Kiro desktop app's own refresh endpoint (refresh token only, no client
     /// id/secret).
@@ -102,19 +105,38 @@ struct TokenState {
 }
 
 /// Owns the current credentials for one gateway process and coordinates refreshing,
-/// persisting, and reading them.
+/// persisting, and reading them. In multi-key mode the shared manager also selects
+/// per-request managers for each Kiro API key.
 ///
-/// There is normally one `AuthManager` per running gateway. All async methods that touch
-/// `TokenState` take the internal [`tokio::sync::Mutex`] lock, so concurrent callers are
-/// serialized: only one refresh (network request) happens at a time, and callers that ask
-/// for a token while a refresh is already in flight simply wait for the same lock rather
-/// than triggering a second, redundant refresh.
+/// There is one shared base `AuthManager` per running gateway. In multi-key mode it creates
+/// request-scoped managers for selected keys. All async methods that touch `TokenState`
+/// take the internal [`tokio::sync::Mutex`] lock, so concurrent callers using a given
+/// manager are serialized: only one refresh (network request) happens at a time, and
+/// callers that ask for a token while a refresh is already in flight simply wait for the
+/// same lock rather than triggering a second, redundant refresh.
 pub struct AuthManager {
     config: Config,
     fingerprint: String,
     state: Mutex<TokenState>,
     profile_autofetch: ProfileArnAutofetchHook,
+    api_key_pool: Option<ApiKeyPool>,
 }
+
+/// Per-process key assignment overrides for multi-key API-key authentication.
+/// The base assignment is deterministic hashing; this map only stores sessions
+/// moved to another key after an upstream failure.
+struct ApiKeyPool {
+    keys: Vec<String>,
+    assignments: Mutex<SessionAssignments>,
+}
+
+#[derive(Default)]
+struct SessionAssignments {
+    by_session: HashMap<String, usize>,
+    insertion_order: VecDeque<String>,
+}
+
+const MAX_STICKY_SESSIONS: usize = 10_000;
 
 impl AuthManager {
     /// Builds a new manager by loading credentials per `Credentials::load` (environment,
@@ -136,6 +158,7 @@ impl AuthManager {
         let credentials = Credentials::load(&config)?;
         let region = final_api_region(&config, &credentials);
         let auth_type = AuthType::from_credentials(&credentials);
+        let keys: Vec<String> = config.api_keys().map(str::to_owned).collect();
         Ok(Self {
             config,
             fingerprint: machine_fingerprint().to_string(),
@@ -145,7 +168,90 @@ impl AuthManager {
                 region,
             }),
             profile_autofetch: ProfileArnAutofetchHook::default(),
+            api_key_pool: (keys.len() > 1).then_some(ApiKeyPool {
+                keys,
+                assignments: Mutex::new(SessionAssignments::default()),
+            }),
         })
+    }
+
+    /// Returns the key manager assigned to a hashed session identifier.
+    /// Existing sessions keep their failover assignment; new sessions are
+    /// deterministically distributed across the configured keys.
+    pub async fn api_key_manager_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(usize, Arc<AuthManager>)>> {
+        let Some(pool) = &self.api_key_pool else {
+            return Ok(None);
+        };
+        let index = {
+            let assignments = pool.assignments.lock().await;
+            assignments
+                .by_session
+                .get(session_id)
+                .copied()
+                .unwrap_or_else(|| hash_index(session_id, pool.keys.len()))
+        };
+        self.manager_for_key(pool, index).map(Some)
+    }
+
+    /// Selects the next API key after a retryable upstream failure and
+    /// returns a manager for that key. The session assignment is persisted
+    /// only after a key opens the upstream request successfully. Returns
+    /// `None` when there is no multi-key pool or all keys have been attempted.
+    pub async fn failover_api_key_manager(
+        &self,
+        failed_index: usize,
+        attempted: &[usize],
+    ) -> Result<Option<(usize, Arc<AuthManager>)>> {
+        let Some(pool) = &self.api_key_pool else {
+            return Ok(None);
+        };
+        let next = (1..=pool.keys.len())
+            .map(|offset| (failed_index + offset) % pool.keys.len())
+            .find(|index| !attempted.contains(index));
+        let Some(index) = next else {
+            return Ok(None);
+        };
+        self.manager_for_key(pool, index).map(Some)
+    }
+
+    /// Persists a session's key assignment after that key successfully opens
+    /// the upstream request.
+    pub async fn remember_api_key_session(&self, session_id: &str, index: usize) {
+        let Some(pool) = &self.api_key_pool else {
+            return;
+        };
+        if index >= pool.keys.len() {
+            return;
+        }
+        {
+            let mut assignments = pool.assignments.lock().await;
+            assignments.by_session.insert(session_id.to_string(), index);
+            assignments.insertion_order.retain(|id| id != session_id);
+            assignments
+                .insertion_order
+                .push_back(session_id.to_string());
+            while assignments.by_session.len() > MAX_STICKY_SESSIONS {
+                if let Some(oldest) = assignments.insertion_order.pop_front() {
+                    assignments.by_session.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn manager_for_key(
+        &self,
+        pool: &ApiKeyPool,
+        index: usize,
+    ) -> Result<(usize, Arc<AuthManager>)> {
+        let key = pool.keys[index].clone();
+        let mut config = self.config.clone();
+        config.kiro_api_key = Some(key);
+        Ok((index, Arc::new(AuthManager::new(config)?)))
     }
 
     /// Returns a currently-valid access token, refreshing it first if necessary.
@@ -491,8 +597,8 @@ impl AuthManager {
         crate::config::KIRO_MANAGEMENT_HOST_TEMPLATE.replace("{region}", &region)
     }
 
-    /// Whether this manager authenticates with a Kiro API key (`KIRO_API_KEY`) instead of
-    /// a refreshable OAuth session.
+    /// Whether this manager authenticates with a Kiro API key from
+    /// `KIRO_API_KEY` instead of a refreshable OAuth session.
     ///
     /// # Examples
     ///
@@ -725,6 +831,12 @@ impl AuthManager {
         tracing::warn!("no matching SQLite token key found for write-back");
         Ok(())
     }
+}
+
+fn hash_index(session_id: &str, key_count: usize) -> usize {
+    let digest = Sha256::digest(session_id.as_bytes());
+    let value = u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 prefix length"));
+    (value % key_count as u64) as usize
 }
 
 /// Returns the configured API key as the bearer token, or an auth error if it vanished.

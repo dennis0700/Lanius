@@ -65,6 +65,12 @@ fn hex_sha256(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Hashes a client-supplied session identifier or a stable conversation seed
+/// before it is retained for API-key stickiness.
+pub fn hash_affinity_key(value: &str) -> String {
+    hex_sha256(value.as_bytes())[..32].to_string()
+}
+
 // Client identity mirrored from the official Kiro CLI (captured from
 // kiro-cli 2.29.1 request logs). Bump these together when Kiro raises its
 // minimum supported client version.

@@ -147,6 +147,18 @@ impl GatewayError {
         matches!(self, Self::Upstream { info, .. } if info.is_context_limit())
     }
 
+    /// Returns whether moving a request to another configured API key may
+    /// recover from this upstream failure.
+    pub(crate) fn should_failover_api_key(&self) -> bool {
+        match self {
+            Self::Auth(_) | Self::Network(_) | Self::FirstTokenTimeout(_) => true,
+            Self::Upstream { status, .. } => {
+                *status == 401 || *status == 403 || *status == 429 || *status >= 500
+            }
+            _ => false,
+        }
+    }
+
     /// Returns an operator-facing description of this error for logs. Unlike
     /// [`Self::user_message`], this keeps diagnostic detail such as Kiro's
     /// raw error message/reason and the transport error chain.

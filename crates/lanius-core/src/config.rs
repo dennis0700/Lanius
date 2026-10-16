@@ -185,9 +185,8 @@ pub struct Config {
     /// Optional HTTP/HTTPS/SOCKS5 proxy URL used for all upstream Kiro requests.
     pub vpn_proxy_url: Option<String>,
 
-    /// Long-lived Kiro API key (`ksk_...`) for headless authentication. When
-    /// set it takes precedence over every other credential source and the
-    /// gateway never refreshes or persists tokens.
+    /// Kiro API key (`ksk_...`) or comma-separated key list for headless
+    /// authentication. Multiple keys enable per-session selection and failover.
     pub kiro_api_key: Option<String>,
 
     /// Refresh token used to authenticate with Kiro.
@@ -353,9 +352,21 @@ impl Config {
     /// assert!(cfg.uses_api_key());
     /// ```
     pub fn uses_api_key(&self) -> bool {
-        self.kiro_api_key
-            .as_deref()
-            .is_some_and(|key| !key.is_empty())
+        self.api_keys().next().is_some()
+    }
+
+    /// Returns unique, non-empty keys parsed from `kiro_api_key`, preserving
+    /// their configured order.
+    pub fn api_keys(&self) -> impl Iterator<Item = &str> {
+        let mut keys = Vec::new();
+        if let Some(raw) = self.kiro_api_key.as_deref() {
+            for key in raw.split(',').map(str::trim).filter(|key| !key.is_empty()) {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        keys.into_iter()
     }
 
     /// Renders [`KIRO_REFRESH_URL_TEMPLATE`] for this config's region.
