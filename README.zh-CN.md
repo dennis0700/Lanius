@@ -88,7 +88,7 @@ lanius help
 | `PROXY_API_KEY` | 客户端访问 Lanius 时必须提供的 Bearer 密钥。必填，且不能为空。 |
 | `KIRO_REGION` | 用于构造 Kiro/OIDC 端点 URL 的 AWS 区域。 |
 | `SERVER_HOST` / `SERVER_PORT` | 网关 HTTP 服务器的监听地址。 |
-| `KIRO_API_KEY` | 用于无界面服务器/CI 的 Kiro API key（`ksk_...`）。会覆盖所有其他凭据来源；须与 `KIRO_REGION` 匹配。 |
+| `KIRO_API_KEY` | 用于无界面服务器/CI 的 Kiro API Key（`ksk_...`）；多个 Key 用逗号分隔，按会话哈希分配并在符合条件的上游失败时切换。须与 `KIRO_REGION` 匹配。 |
 | `REFRESH_TOKEN` / `PROFILE_ARN` | 用于向 Kiro 认证的 refresh token 和（可选的）profile ARN。 |
 | `KIRO_CREDS_FILE` / `KIRO_CLI_DB_FILE` | 备选凭据来源（JSON 文件 / Kiro CLI 的 SQLite 数据库）。 |
 | `LOG_LEVEL` / `DEBUG_MODE` | 日志详细程度，以及可选的请求/响应调试捕获。 |

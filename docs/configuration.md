@@ -30,7 +30,7 @@ default; this table mirrors it.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `KIRO_API_KEY` | unset | Kiro API key (`ksk_...`) for headless/CI use. When set it overrides every other credential source and is never refreshed or persisted; Lanius adds the `tokentype: API_KEY` header and skips profile ARN lookup (see [auth.md](auth.md#api-key-headless-mode)). Keys are region-scoped: set `KIRO_REGION` to the region the key was issued for. |
+| `KIRO_API_KEY` | unset | Kiro API key (`ksk_...`) for headless/CI use; separate multiple keys with commas. Keys are selected by hashed session affinity, with failover on upstream authentication, network, rate-limit, server, or first-stream setup failures. API keys override every other credential source and are never refreshed or persisted; Lanius adds the `tokentype: API_KEY` header and skips profile ARN lookup (see [auth.md](auth.md#api-key-headless-mode)). All keys must match `KIRO_REGION`. |
 | `REFRESH_TOKEN` | unset | Refresh token used to authenticate with Kiro (seeds `Credentials`; may be overridden by a file/SQLite source). |
 | `PROFILE_ARN` | unset | Optional AWS IAM profile ARN associated with the refresh token. |
 | `KIRO_CREDS_FILE` | unset | Path to a Kiro desktop JSON credentials file (`~` expanded). |

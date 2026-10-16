@@ -50,7 +50,7 @@ use crate::truncation::{
 use crate::upstream::{
     KiroEvent, KiroHttpClient, WEB_SEARCH_TOOL_DESCRIPTION, web_search_input_schema,
 };
-use crate::utils::{HashableMessage, generate_conversation_id};
+use crate::utils::{HashableMessage, generate_conversation_id, hash_affinity_key};
 
 /// Shared axum state for the OpenAI routes: gateway config, the shared
 /// [`AuthManager`] and model catalog cache, the [`ModelResolver`] used to
@@ -209,17 +209,35 @@ async fn chat_completions(
     let original_model = request.model.clone();
     let original_messages = messages_to_values(&request.messages);
     let conversation_id = conversation_id_for(&request.messages);
+    let affinity_id = api_key_affinity_id(&headers, &request, &conversation_id);
+    let (active_key_index, initial_auth) = match state
+        .auth_manager
+        .api_key_manager_for_session(&affinity_id)
+        .await
+    {
+        Ok(Some((index, auth))) => (Some(index), auth),
+        Ok(None) => (None, state.auth_manager.clone()),
+        Err(error) => return gateway_error_response(error),
+    };
     inject_truncation_recovery(&mut request, &state.truncation_store, &conversation_id);
-    let web_tools_allowed = state.config.web_search_enabled
-        && web_tools_allowed(&state.auth_manager, &state.config).await;
+    let web_tools_allowed =
+        state.config.web_search_enabled && web_tools_allowed(&initial_auth, &state.config).await;
     let server_search = inject_web_search_tool(&mut request, web_tools_allowed);
 
     request.model = state.model_resolver.resolve(&request.model).internal_id;
-    let prepared = match prepare_openai_request(&state, &request, &conversation_id).await {
-        Ok(prepared) => prepared,
+    let (prepared, active_auth) = match prepare_openai_with_failover(
+        &state,
+        &request,
+        &conversation_id,
+        &affinity_id,
+        active_key_index,
+        initial_auth,
+    )
+    .await
+    {
+        Ok(result) => result,
         Err(error) => return gateway_error_response(error),
     };
-
     let format_context = OpenAiFormatContext::new(
         original_model,
         (*state.model_cache).clone(),
@@ -231,7 +249,7 @@ async fn chat_completions(
     )
     .with_tool_name_aliases(prepared.tool_name_aliases);
     let search = SearchLoop {
-        auth: state.auth_manager.clone(),
+        auth: active_auth,
         config: state.config.clone(),
         max_searches: server_search.then_some(DEFAULT_MAX_SEARCHES),
     };
@@ -268,12 +286,12 @@ struct PreparedOpenAiRequest {
 /// aliases).
 async fn prepare_openai_request(
     state: &OpenAiState,
+    auth: &Arc<AuthManager>,
     request: &ChatCompletionRequest,
     conversation_id: &str,
 ) -> crate::error::Result<PreparedOpenAiRequest> {
-    state.auth_manager.access_token_and_autofetch().await?;
-    let profile_arn = state
-        .auth_manager
+    auth.access_token_and_autofetch().await?;
+    let profile_arn = auth
         .profile_arn()
         .await
         .or_else(|| state.config.profile_arn.clone());
@@ -287,12 +305,87 @@ async fn prepare_openai_request(
         &mut tool_name_aliases,
     )?
     .payload;
-    let source = open_chat_stream(state.auth_manager.clone(), &state.config, &payload).await?;
+    let source = open_chat_stream(auth.clone(), &state.config, &payload).await?;
     Ok(PreparedOpenAiRequest {
         source,
         payload,
         tool_name_aliases,
     })
+}
+
+async fn prepare_openai_with_failover(
+    state: &OpenAiState,
+    request: &ChatCompletionRequest,
+    conversation_id: &str,
+    affinity_id: &str,
+    mut key_index: Option<usize>,
+    mut auth: Arc<AuthManager>,
+) -> crate::error::Result<(PreparedOpenAiRequest, Arc<AuthManager>)> {
+    let mut attempted = Vec::new();
+    loop {
+        if let Some(index) = key_index {
+            attempted.push(index);
+        }
+        match prepare_openai_request(state, &auth, request, conversation_id).await {
+            Ok(prepared) => {
+                if let Some(index) = key_index {
+                    state
+                        .auth_manager
+                        .remember_api_key_session(affinity_id, index)
+                        .await;
+                }
+                return Ok((prepared, auth));
+            }
+            Err(error) if error.should_failover_api_key() && key_index.is_some() => {
+                match state
+                    .auth_manager
+                    .failover_api_key_manager(key_index.expect("checked above"), &attempted)
+                    .await?
+                {
+                    Some((index, next_auth)) => {
+                        tracing::warn!(
+                            from_key = key_index.unwrap_or_default() + 1,
+                            to_key = index + 1,
+                            "upstream request failed; switching API key for this session"
+                        );
+                        key_index = Some(index);
+                        auth = next_auth;
+                    }
+                    None => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn api_key_affinity_id(
+    headers: &HeaderMap,
+    request: &ChatCompletionRequest,
+    fallback: &str,
+) -> String {
+    let header_id = headers
+        .get("x-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let user_id = request
+        .user
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let first_user_message = request
+        .messages
+        .iter()
+        .find(|message| message.role.eq_ignore_ascii_case("user"))
+        .or_else(|| request.messages.first())
+        .and_then(|message| serde_json::to_string(message).ok());
+    hash_affinity_key(
+        header_id
+            .or(user_id)
+            .or(first_user_message.as_deref())
+            .unwrap_or(fallback),
+    )
 }
 
 /// Builds the streaming `text/event-stream` [`Response`] for a request,

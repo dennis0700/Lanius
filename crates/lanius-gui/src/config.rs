@@ -78,7 +78,8 @@ pub struct AppConfig {
     pub refresh_token: Option<String>,
     pub kiro_creds_file: Option<String>,
     pub kiro_cli_db_file: Option<String>,
-    /// Long-lived Kiro API key (`ksk_...`), used when `auth_method` is `ApiKey`.
+    /// One Kiro API key (`ksk_...`) or a comma-separated list, used when
+    /// `auth_method` is `ApiKey`.
     #[serde(default)]
     pub kiro_api_key: Option<String>,
 
@@ -170,7 +171,10 @@ impl AppConfig {
                 .kiro_cli_db_file
                 .as_ref()
                 .is_some_and(|d| !d.is_empty()),
-            AuthMethod::ApiKey => self.kiro_api_key.as_ref().is_some_and(|k| !k.is_empty()),
+            AuthMethod::ApiKey => self
+                .kiro_api_key
+                .as_deref()
+                .is_some_and(|keys| keys.split(',').any(|key| !key.trim().is_empty())),
         }
     }
 
