@@ -72,6 +72,7 @@ lanius probe [prompt]           # 向线上 Kiro 后端发起一次端到端请�
 lanius probe --capture out.bin  # 同上，并将原始上游数据流保存到文件
 lanius replay out.bin           # 离线解码之前捕获的原始数据流
 lanius usage                    # 查看所配置账号的用量/配额
+                                # （KIRO_API_KEY 配置多个 key 时逐个列出）
 lanius usage --json             # 同上，输出原始 Kiro JSON
 lanius models                   # 列出该网关当前可解析的模型
 lanius models --json            # 同上，以 JSON 输出
