@@ -111,6 +111,12 @@ lanius help
 并将其作为加固的 systemd 服务运行，请参阅
 [`docs/zh-CN/deployment.md`](docs/zh-CN/deployment.md)。
 
+### Docker / Kubernetes
+
+`docker build -t lanius .` 会用仓库根目录的 [`Dockerfile`](Dockerfile) 构建一个约 11 MB 的
+非 root 镜像。详见 [`docs/zh-CN/container.md`](docs/zh-CN/container.md) 和示例清单
+[`deploy/kubernetes/lanius.yaml`](deploy/kubernetes/lanius.yaml)。
+
 ## 更新
 
 - **桌面应用**：会自动检查 GitHub 上的新版本（可在设置中开关），也可以在设置页

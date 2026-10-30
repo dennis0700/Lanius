@@ -204,8 +204,8 @@ The shipped unit ([`deploy/systemd/lanius.service`](../deploy/systemd/lanius.ser
 - starts after the network is online and restarts on failure;
 - runs as `lanius:lanius` with `NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome`, `PrivateTmp`, and only `/opt/lanius` writable;
-- stops with `SIGINT`, the signal Lanius handles for graceful shutdown (it
-  doesn't handle systemd's default `SIGTERM`).
+- stops with `SIGINT`. Lanius shuts down gracefully on `SIGINT` or `SIGTERM`;
+  the unit keeps `SIGINT` because older releases only handled that signal.
 
 Logs go to stdout/stderr and end up in the journal. No log files are needed.
 With `DEBUG_MODE` enabled, debug dumps go to `DEBUG_DIR` (default
