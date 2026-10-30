@@ -34,6 +34,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
@@ -125,9 +126,34 @@ pub struct AuthManager {
 /// Per-process key assignment overrides for multi-key API-key authentication.
 /// The base assignment is deterministic hashing; this map only stores sessions
 /// moved to another key after an upstream failure.
+///
+/// `exhausted` marks keys removed from load balancing because their credits
+/// are used up with overage disabled (see
+/// [`crate::account::refresh_api_key_quotas`]); selection skips them while
+/// any other key is available.
 struct ApiKeyPool {
     keys: Vec<String>,
     assignments: Mutex<SessionAssignments>,
+    exhausted: Vec<AtomicBool>,
+}
+
+impl ApiKeyPool {
+    fn is_exhausted(&self, index: usize) -> bool {
+        self.exhausted
+            .get(index)
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+
+    /// `preferred` if it is still in rotation, otherwise the next key after
+    /// it that is. Falls back to `preferred` when every key is exhausted, so
+    /// requests still reach Kiro (and surface its quota error) rather than
+    /// failing locally.
+    fn available_from(&self, preferred: usize) -> usize {
+        (0..self.keys.len())
+            .map(|offset| (preferred + offset) % self.keys.len())
+            .find(|index| !self.is_exhausted(*index))
+            .unwrap_or(preferred)
+    }
 }
 
 #[derive(Default)]
@@ -168,16 +194,107 @@ impl AuthManager {
                 region,
             }),
             profile_autofetch: ProfileArnAutofetchHook::default(),
-            api_key_pool: (keys.len() > 1).then_some(ApiKeyPool {
+            api_key_pool: (keys.len() > 1).then(|| ApiKeyPool {
+                exhausted: keys.iter().map(|_| AtomicBool::new(false)).collect(),
                 keys,
                 assignments: Mutex::new(SessionAssignments::default()),
             }),
         })
     }
 
+    /// Number of keys in the multi-key pool (`0` unless `KIRO_API_KEY`
+    /// lists more than one key).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::Config;
+    ///
+    /// let auth = AuthManager::new(Config {
+    ///     kiro_api_key: Some("ksk_a,ksk_b".into()),
+    ///     ..Config::default()
+    /// }).expect("valid config");
+    /// assert_eq!(auth.api_key_count(), 2);
+    /// ```
+    pub fn api_key_count(&self) -> usize {
+        self.api_key_pool.as_ref().map_or(0, |pool| pool.keys.len())
+    }
+
+    /// Builds a manager for pool key `index`, or `None` without a multi-key
+    /// pool or for an out-of-range index.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::Config;
+    ///
+    /// let auth = AuthManager::new(Config {
+    ///     kiro_api_key: Some("ksk_a,ksk_b".into()),
+    ///     ..Config::default()
+    /// }).expect("valid config");
+    /// assert!(auth.api_key_manager(1).expect("builds").is_some());
+    /// assert!(auth.api_key_manager(2).expect("builds").is_none());
+    /// ```
+    pub fn api_key_manager(&self, index: usize) -> Result<Option<Arc<AuthManager>>> {
+        match &self.api_key_pool {
+            Some(pool) if index < pool.keys.len() => self
+                .manager_for_key(pool, index)
+                .map(|(_, auth)| Some(auth)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Whether pool key `index` is currently removed from load balancing
+    /// because its credits are exhausted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::Config;
+    ///
+    /// let auth = AuthManager::new(Config {
+    ///     kiro_api_key: Some("ksk_a,ksk_b".into()),
+    ///     ..Config::default()
+    /// }).expect("valid config");
+    /// assert!(!auth.is_api_key_exhausted(0));
+    /// ```
+    pub fn is_api_key_exhausted(&self, index: usize) -> bool {
+        self.api_key_pool
+            .as_ref()
+            .is_some_and(|pool| pool.is_exhausted(index))
+    }
+
+    /// Removes pool key `index` from (or, with `false`, returns it to) load
+    /// balancing. Returns whether the state changed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::Config;
+    ///
+    /// let auth = AuthManager::new(Config {
+    ///     kiro_api_key: Some("ksk_a,ksk_b".into()),
+    ///     ..Config::default()
+    /// }).expect("valid config");
+    /// assert!(auth.set_api_key_exhausted(0, true));
+    /// assert!(!auth.set_api_key_exhausted(0, true));
+    /// assert!(auth.is_api_key_exhausted(0));
+    /// ```
+    pub fn set_api_key_exhausted(&self, index: usize, exhausted: bool) -> bool {
+        self.api_key_pool
+            .as_ref()
+            .and_then(|pool| pool.exhausted.get(index))
+            .is_some_and(|flag| flag.swap(exhausted, Ordering::Relaxed) != exhausted)
+    }
+
     /// Returns the key manager assigned to a hashed session identifier.
     /// Existing sessions keep their failover assignment; new sessions are
-    /// deterministically distributed across the configured keys.
+    /// deterministically distributed across the configured keys. A session
+    /// whose key is exhausted moves to the next key still in rotation.
     pub async fn api_key_manager_for_session(
         &self,
         session_id: &str,
@@ -193,24 +310,37 @@ impl AuthManager {
                 .copied()
                 .unwrap_or_else(|| hash_index(session_id, pool.keys.len()))
         };
-        self.manager_for_key(pool, index).map(Some)
+        self.manager_for_key(pool, pool.available_from(index))
+            .map(Some)
     }
 
     /// Selects the next API key after a retryable upstream failure and
     /// returns a manager for that key. The session assignment is persisted
     /// only after a key opens the upstream request successfully. Returns
-    /// `None` when there is no multi-key pool or all keys have been attempted.
+    /// `None` when there is no multi-key pool or all keys still in rotation
+    /// have been attempted.
+    ///
+    /// When `error` shows the failed key ran out of credits (Kiro's
+    /// `MONTHLY_REQUEST_COUNT`), that key is removed from load balancing
+    /// right away instead of waiting for the next usage poll.
     pub async fn failover_api_key_manager(
         &self,
         failed_index: usize,
         attempted: &[usize],
+        error: &GatewayError,
     ) -> Result<Option<(usize, Arc<AuthManager>)>> {
         let Some(pool) = &self.api_key_pool else {
             return Ok(None);
         };
+        if error.is_quota_exhausted() && self.set_api_key_exhausted(failed_index, true) {
+            tracing::warn!(
+                key = failed_index + 1,
+                "API key is out of credits; removed from load balancing"
+            );
+        }
         let next = (1..=pool.keys.len())
             .map(|offset| (failed_index + offset) % pool.keys.len())
-            .find(|index| !attempted.contains(index));
+            .find(|index| !attempted.contains(index) && !pool.is_exhausted(*index));
         let Some(index) = next else {
             return Ok(None);
         };
@@ -1330,6 +1460,98 @@ mod tests {
             auth.control_plane_host().await,
             "https://management.eu-central-1.kiro.dev"
         );
+    }
+
+    #[tokio::test]
+    async fn exhausted_keys_leave_load_balancing_until_restored() {
+        let auth = AuthManager::new(Config {
+            kiro_api_key: Some("ksk_a,ksk_b,ksk_c".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let session = "session";
+        let (home, _) = auth
+            .api_key_manager_for_session(session)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // A session whose key is exhausted moves to the next key in rotation.
+        assert!(auth.set_api_key_exhausted(home, true));
+        let (moved, _) = auth
+            .api_key_manager_for_session(session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved, (home + 1) % 3);
+
+        // Failover skips exhausted keys and stops once none are left.
+        let other = (home + 2) % 3;
+        let error = GatewayError::Internal("boom".into());
+        let (next, _) = auth
+            .failover_api_key_manager(moved, &[moved], &error)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(next, other);
+        assert!(
+            auth.failover_api_key_manager(other, &[moved, other], &error)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // With every key exhausted, the session still gets its own key.
+        auth.set_api_key_exhausted(moved, true);
+        auth.set_api_key_exhausted(other, true);
+        let (fallback, _) = auth
+            .api_key_manager_for_session(session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fallback, home);
+
+        // Restoring a key puts it back in rotation.
+        assert!(auth.set_api_key_exhausted(home, false));
+        let (restored, _) = auth
+            .api_key_manager_for_session(session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored, home);
+    }
+
+    #[tokio::test]
+    async fn quota_error_removes_the_failed_key_immediately() {
+        let auth = AuthManager::new(Config {
+            kiro_api_key: Some("ksk_a,ksk_b".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let quota = GatewayError::Upstream {
+            status: 429,
+            info: Box::new(crate::error::enhance_kiro_error(
+                &serde_json::json!({"reason": "MONTHLY_REQUEST_COUNT"}),
+            )),
+        };
+        assert!(quota.should_failover_api_key());
+        let (next, _) = auth
+            .failover_api_key_manager(0, &[0], &quota)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(next, 1);
+        assert!(auth.is_api_key_exhausted(0));
+        assert!(!auth.is_api_key_exhausted(1));
+
+        // Single-key mode has no pool to balance.
+        let single = AuthManager::new(Config {
+            kiro_api_key: Some("ksk_a".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        assert_eq!(single.api_key_count(), 0);
+        assert!(!single.set_api_key_exhausted(0, true));
     }
 
     #[tokio::test]
