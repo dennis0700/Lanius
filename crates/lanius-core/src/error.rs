@@ -147,13 +147,39 @@ impl GatewayError {
         matches!(self, Self::Upstream { info, .. } if info.is_context_limit())
     }
 
+    /// Returns `true` when Kiro rejected the request because the account's
+    /// credits are used up (`MONTHLY_REQUEST_COUNT`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::GatewayError;
+    /// use lanius_core::error::enhance_kiro_error;
+    /// use serde_json::json;
+    ///
+    /// let error = GatewayError::Upstream {
+    ///     status: 429,
+    ///     info: Box::new(enhance_kiro_error(&json!({"reason": "MONTHLY_REQUEST_COUNT"}))),
+    /// };
+    /// assert!(error.is_quota_exhausted());
+    /// assert!(!GatewayError::Internal("boom".into()).is_quota_exhausted());
+    /// ```
+    pub fn is_quota_exhausted(&self) -> bool {
+        matches!(self, Self::Upstream { info, .. }
+            if info.reason == KiroErrorReason::MonthlyRequestCount.as_str())
+    }
+
     /// Returns whether moving a request to another configured API key may
     /// recover from this upstream failure.
     pub(crate) fn should_failover_api_key(&self) -> bool {
         match self {
             Self::Auth(_) | Self::Network(_) | Self::FirstTokenTimeout(_) => true,
             Self::Upstream { status, .. } => {
-                *status == 401 || *status == 403 || *status == 429 || *status >= 500
+                *status == 401
+                    || *status == 403
+                    || *status == 429
+                    || *status >= 500
+                    || self.is_quota_exhausted()
             }
             _ => false,
         }

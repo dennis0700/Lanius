@@ -7,10 +7,13 @@
 //! [`account_summary`] reshapes the raw payload into a flatter, UI-friendly
 //! shape.
 
+use std::sync::{Arc, Weak};
+
 use chrono::TimeZone;
 use serde_json::{Value, json};
 
 use crate::auth::AuthManager;
+use crate::config::Config;
 use crate::error::{GatewayError, Result, enhance_kiro_error};
 use crate::upstream::KiroHttpClient;
 use crate::utils::{API_RUNTIME, KIRO_ORIGIN, with_query};
@@ -182,6 +185,157 @@ pub fn account_summary(usage: &Value) -> Value {
     })
 }
 
+/// How often [`watch_api_key_quotas`] re-checks every key's credit usage.
+pub const API_KEY_QUOTA_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Whether an account (raw usage-limits JSON, as returned by [`fetch_usage`])
+/// has used up its credits with overage disabled, i.e. further requests on it
+/// will be refused. Requires a known, non-zero quota, base usage at or above
+/// it, and every active bonus used up as well. With overage enabled
+/// (`overageConfiguration.overageStatus == "ENABLED"`) the account is only
+/// exhausted once its overage also reaches the cap Kiro reports
+/// (`currentOverages >= overageCap` in the usage breakdown); without a
+/// reported cap, overage is treated as unlimited.
+///
+/// # Examples
+///
+/// ```
+/// use lanius_core::account::is_credit_exhausted;
+/// use serde_json::json;
+///
+/// let used_up = json!({"usageBreakdownList": [{"usageLimit": 50, "currentUsage": 50}]});
+/// assert!(is_credit_exhausted(&used_up));
+///
+/// let overage = json!({
+///     "overageConfiguration": {"overageStatus": "ENABLED"},
+///     "usageBreakdownList": [{
+///         "usageLimit": 50, "currentUsage": 60, "currentOverages": 10, "overageCap": 100
+///     }]
+/// });
+/// assert!(!is_credit_exhausted(&overage));
+///
+/// let capped = json!({
+///     "overageConfiguration": {"overageStatus": "ENABLED"},
+///     "usageBreakdownList": [{
+///         "usageLimit": 50, "currentUsage": 150, "currentOverages": 100, "overageCap": 100
+///     }]
+/// });
+/// assert!(is_credit_exhausted(&capped));
+/// ```
+pub fn is_credit_exhausted(usage: &Value) -> bool {
+    let summary = account_summary(usage);
+    let number = |key: &str| summary.get(key).and_then(Value::as_f64);
+    // Kiro reports overage as `overageConfiguration.overageStatus`; the
+    // per-breakdown `overageEnabled` flag is honored too.
+    let overage = usage
+        .pointer("/overageConfiguration/overageStatus")
+        .and_then(Value::as_str)
+        == Some("ENABLED")
+        || summary
+            .get("overageEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let quota = number("totalQuota").unwrap_or(0.0);
+    let used = number("currentUsage").unwrap_or(0.0);
+    let bonus_left = match (number("bonusQuota"), number("bonusUsage")) {
+        (Some(quota), Some(used)) => quota - used > 0.0,
+        _ => false,
+    };
+    let base_exhausted = quota > 0.0 && used >= quota && !bonus_left;
+    base_exhausted && (!overage || overage_cap_reached(usage))
+}
+
+/// Whether the first usage breakdown reports a positive overage cap that
+/// current overage has reached.
+fn overage_cap_reached(usage: &Value) -> bool {
+    let Some(breakdown) = usage
+        .get("usageBreakdownList")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    let cap = precision_or_regular(breakdown, "overageCapWithPrecision", "overageCap");
+    let used = precision_or_regular(breakdown, "currentOveragesWithPrecision", "currentOverages");
+    cap > 0.0 && used >= cap
+}
+
+/// Fetches every pooled API key's usage once and removes keys whose credits
+/// are exhausted (see [`is_credit_exhausted`]) from load balancing, or
+/// returns keys that have credits again (e.g. after the monthly reset). A key
+/// whose usage cannot be fetched keeps its current state. No-op unless
+/// `KIRO_API_KEY` lists more than one key.
+///
+/// # Examples
+///
+/// ```no_run
+/// use lanius_core::account::refresh_api_key_quotas;
+/// use lanius_core::auth::AuthManager;
+/// use lanius_core::Config;
+///
+/// # async fn example() -> lanius_core::Result<()> {
+/// let config = Config::default();
+/// let auth = AuthManager::new(config.clone())?;
+/// refresh_api_key_quotas(&auth, &config).await;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn refresh_api_key_quotas(auth: &AuthManager, config: &Config) {
+    let checks = (0..auth.api_key_count()).map(|index| async move {
+        let usage = async {
+            let Some(key_auth) = auth.api_key_manager(index)? else {
+                return Ok(None);
+            };
+            let client = KiroHttpClient::new(key_auth.clone(), config)?;
+            fetch_usage(&key_auth, &client).await.map(Some)
+        };
+        (index, usage.await)
+    });
+    for (index, usage) in futures_util::future::join_all(checks).await {
+        let usage = match usage {
+            Ok(Some(usage)) => usage,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(
+                    key = index + 1,
+                    error = %error.log_detail(),
+                    "could not check API key credits; keeping its load-balancing state"
+                );
+                continue;
+            }
+        };
+        let exhausted = is_credit_exhausted(&usage);
+        if auth.set_api_key_exhausted(index, exhausted) {
+            if exhausted {
+                tracing::warn!(
+                    key = index + 1,
+                    "API key credits exhausted (overage disabled); removed from load balancing"
+                );
+            } else {
+                tracing::info!(
+                    key = index + 1,
+                    "API key has credits again; back in load balancing"
+                );
+            }
+        }
+    }
+}
+
+/// Runs [`refresh_api_key_quotas`] now and then every
+/// [`API_KEY_QUOTA_POLL_INTERVAL`] until the last strong reference to `auth`
+/// is dropped (i.e. the server it belongs to has shut down).
+pub(crate) async fn watch_api_key_quotas(auth: Weak<AuthManager>, config: Arc<Config>) {
+    let mut ticks = tokio::time::interval(API_KEY_QUOTA_POLL_INTERVAL);
+    loop {
+        ticks.tick().await;
+        let Some(auth) = auth.upgrade() else {
+            return;
+        };
+        refresh_api_key_quotas(&auth, &config).await;
+    }
+}
+
 // Prefers a "with precision" numeric field over its rounded counterpart,
 // falling back to the rounded field when the precise one is absent or zero
 // (Kiro sometimes omits precision fields, represented as 0.0 here).
@@ -214,6 +368,51 @@ mod tests {
         assert_eq!(value.as_object().map(serde_json::Map::len), Some(22));
         assert_eq!(value["remainingQuota"], 3.0);
         assert_eq!(value["bonusRemaining"], 2.0);
+    }
+
+    #[test]
+    fn credit_exhaustion_requires_used_up_quota_bonus_and_no_overage() {
+        let breakdown = |extra: Value| {
+            let mut entry = json!({"usageLimit": 100, "currentUsage": 100});
+            if let (Some(entry), Value::Object(extra)) = (entry.as_object_mut(), extra) {
+                entry.extend(extra);
+            }
+            json!({"usageBreakdownList": [entry]})
+        };
+        assert!(is_credit_exhausted(&breakdown(json!({}))));
+        assert!(is_credit_exhausted(&breakdown(
+            json!({"overageEnabled": false})
+        )));
+        assert!(!is_credit_exhausted(&breakdown(
+            json!({"overageEnabled": true})
+        )));
+        let mut configured = breakdown(json!({}));
+        configured["overageConfiguration"] = json!({"overageStatus": "ENABLED"});
+        assert!(!is_credit_exhausted(&configured));
+        configured["overageConfiguration"] = json!({"overageStatus": "DISABLED"});
+        assert!(is_credit_exhausted(&configured));
+
+        // Overage enabled: exhausted only once overage reaches Kiro's cap.
+        configured["overageConfiguration"] = json!({"overageStatus": "ENABLED"});
+        configured["usageBreakdownList"][0]["overageCap"] = json!(10000);
+        configured["usageBreakdownList"][0]["currentOverages"] = json!(9999);
+        assert!(!is_credit_exhausted(&configured));
+        configured["usageBreakdownList"][0]["currentOveragesWithPrecision"] = json!(10000.0);
+        assert!(is_credit_exhausted(&configured));
+        // Base credits left: never exhausted, even with overage at the cap.
+        configured["usageBreakdownList"][0]["currentUsage"] = json!(50);
+        assert!(!is_credit_exhausted(&configured));
+        assert!(!is_credit_exhausted(&breakdown(
+            json!({"currentUsage": 99.5})
+        )));
+        assert!(!is_credit_exhausted(&breakdown(json!({
+            "bonuses": [{"status": "ACTIVE", "usageLimit": 20, "currentUsage": 5}]
+        }))));
+        assert!(is_credit_exhausted(&breakdown(json!({
+            "bonuses": [{"status": "ACTIVE", "usageLimit": 20, "currentUsage": 20}]
+        }))));
+        // Unknown quota (missing breakdown) never takes a key out of rotation.
+        assert!(!is_credit_exhausted(&json!({})));
     }
 
     #[test]

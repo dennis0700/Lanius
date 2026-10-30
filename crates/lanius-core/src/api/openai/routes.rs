@@ -341,7 +341,7 @@ async fn prepare_openai_with_failover(
             Err(error) if error.should_failover_api_key() && key_index.is_some() => {
                 match state
                     .auth_manager
-                    .failover_api_key_manager(key_index.expect("checked above"), &attempted)
+                    .failover_api_key_manager(key_index.expect("checked above"), &attempted, &error)
                     .await?
                 {
                     Some((index, next_auth)) => {
