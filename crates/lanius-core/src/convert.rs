@@ -17,19 +17,23 @@
 //!   payload via [`core::build_kiro_payload`].
 //! - `anthropic` — the equivalent for an Anthropic-style `AnthropicMessagesRequest`
 //!   (`crate::api` Anthropic models).
+//! - `responses` — the equivalent for an OpenAI Responses API `ResponsesRequest`,
+//!   converted straight to the unified representation (not via a Chat Completions
+//!   request).
 //! - `guards` — protective post-processing applied to the fully built Kiro payload:
 //!   trimming conversation history to fit a byte budget, and repairing tool-result entries
 //!   that would otherwise reference a tool call that got trimmed away (which Kiro would
 //!   reject as an "orphaned" tool result).
 //!
-//! Call sites (the `api::openai`/`api::anthropic` route handlers) call `openai::build_kiro_payload`
-//! or `anthropic::anthropic_to_kiro` to get a [`core::KiroPayloadResult`] ready to send
-//! upstream to Kiro.
+//! Call sites (the `api::openai`/`api::anthropic` route handlers) call `openai::build_kiro_payload`,
+//! `responses::responses_to_kiro` or `anthropic::anthropic_to_kiro` to get a
+//! [`core::KiroPayloadResult`] ready to send upstream to Kiro.
 
 mod anthropic;
 mod core;
 mod guards;
 mod openai;
+mod responses;
 
 pub use anthropic::{
     anthropic_to_kiro, convert_anthropic_content_to_text, convert_anthropic_messages,
@@ -47,4 +51,8 @@ pub use guards::{PayloadTrimStats, check_payload_size, trim_payload_to_limit};
 pub use openai::{
     build_kiro_payload, convert_openai_messages_to_unified, convert_openai_tools_to_unified,
     reasoning_request_from_openai,
+};
+pub use responses::{
+    convert_responses_input_to_unified, convert_responses_tools_to_unified,
+    reasoning_request_from_responses, responses_to_kiro,
 };

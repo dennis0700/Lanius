@@ -512,7 +512,7 @@ fn non_stream_tool_call_value(call: &ToolCall) -> Value {
 /// [`is_truthy_value`]) — an empty metering object `{}` is treated as
 /// absent rather than as a real (if empty) usage record — plus
 /// `prompt_tokens_details.cached_tokens` when metering reports cache reads.
-fn usage_value(
+pub(super) fn usage_value(
     context: &OpenAiFormatContext,
     content: &str,
     thinking: &str,
@@ -565,7 +565,7 @@ fn cached_prompt_tokens(metering: &Value) -> Option<i64> {
 /// this response, so a later turn of the same conversation can trigger
 /// recovery (see `routes::inject_truncation_recovery`). No-ops if
 /// truncation recovery is disabled.
-fn save_truncations(
+pub(super) fn save_truncations(
     context: &OpenAiFormatContext,
     tool_calls: &[ToolCall],
     content_truncated: bool,

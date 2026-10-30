@@ -95,7 +95,8 @@ lanius help
 
 网关提供以下接口：
 
-- `GET /v1/models`、`POST /v1/chat/completions`：OpenAI 兼容 API
+- `GET /v1/models`、`POST /v1/chat/completions`、`POST /v1/responses`：OpenAI 兼容 API
+  （Chat Completions 与 Responses；`/v1/responses` 不保存状态，请在 `input` 中发送完整对话，而不是使用 `previous_response_id`）
 - `POST /v1/messages`、`POST /v1/messages/count_tokens`：Anthropic 兼容 API
 - `GET /usage`、`GET /account`：所配置账号的用量/配额，需要 `PROXY_API_KEY`
 - `GET /health`：无需认证的健康检查

@@ -180,7 +180,14 @@ pub fn convert_openai_tools_to_unified(
 /// assert_eq!(reasoning_request_from_openai(&request).effort, Some(EffortLevel::Minimal));
 /// ```
 pub fn reasoning_request_from_openai(request: &ChatCompletionRequest) -> ReasoningRequest {
-    let effort = request.reasoning_effort.map(|effort| match effort {
+    reasoning_request_from_effort(request.reasoning_effort)
+}
+
+/// Shared by the Chat Completions (`reasoning_effort`) and Responses
+/// (`reasoning.effort`) request shapes: `none` disables reasoning, any other
+/// level becomes the requested effort, and `None` keeps the model default.
+pub(super) fn reasoning_request_from_effort(effort: Option<ReasoningEffort>) -> ReasoningRequest {
+    let effort = effort.map(|effort| match effort {
         ReasoningEffort::None => EffortLevel::None,
         ReasoningEffort::Minimal => EffortLevel::Minimal,
         ReasoningEffort::Low => EffortLevel::Low,
@@ -307,7 +314,7 @@ fn extract_embedded_tool_results(content: &Value) -> Vec<Value> {
 /// clears both buffers. A no-op if no results are buffered, so calling this between every
 /// message is safe and only produces a new message when there is actually something to
 /// flush.
-fn flush_tool_results(
+pub(super) fn flush_tool_results(
     output: &mut Vec<UnifiedMessage>,
     results: &mut Vec<Value>,
     images: &mut Vec<core::UnifiedImage>,
@@ -322,7 +329,7 @@ fn flush_tool_results(
 /// Returns `value` unchanged if non-empty, or the fixed `"(empty result)"` placeholder
 /// otherwise, matching [`super::core`]'s `EMPTY_RESULT` convention for tool results that
 /// are extracted at this earlier, provider-specific stage rather than later in `core`.
-fn nonempty_result(value: String) -> String {
+pub(super) fn nonempty_result(value: String) -> String {
     if value.is_empty() {
         "(empty result)".to_owned()
     } else {

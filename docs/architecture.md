@@ -34,10 +34,11 @@ graph LR
     lib["lib.rs<br/>crate root; architecture overview + curated re-exports"]
 
     subgraph api["api/ — HTTP-facing routes for both client protocols"]
-        subgraph api_openai["openai/ — /v1/models, /v1/chat/completions"]
+        subgraph api_openai["openai/ — /v1/models, /v1/chat/completions, /v1/responses"]
             api_openai_models["models.rs<br/>serde wire types"]
             api_openai_routes["routes.rs<br/>axum handlers, OpenAiState"]
             api_openai_sse["sse.rs<br/>streaming encoder + non-streaming response builder"]
+            api_openai_responses["responses/<br/>Responses API: request types, handler, output items + SSE events"]
         end
         subgraph api_anthropic["anthropic/ — /v1/messages, /v1/messages/count_tokens"]
             api_anthropic_models["models.rs<br/>serde wire types"]
@@ -50,6 +51,7 @@ graph LR
         convert_core["core.rs<br/>provider-agnostic UnifiedMessage/UnifiedTool + build_kiro_payload"]
         convert_openai["openai.rs<br/>OpenAI request -&gt; UnifiedMessage/UnifiedTool"]
         convert_anthropic["anthropic.rs<br/>Anthropic request -&gt; UnifiedMessage/UnifiedTool"]
+        convert_responses["responses.rs<br/>OpenAI Responses request -&gt; UnifiedMessage/UnifiedTool (direct)"]
         convert_guards["guards.rs<br/>payload-size enforcement, tool-result repair after trimming"]
     end
 
