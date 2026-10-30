@@ -99,6 +99,14 @@ impl AppState {
             });
         }
         let model_resolver = Arc::new(ModelResolver::from_config((*model_cache).clone(), &config));
+        if auth_manager.api_key_count() > 1 {
+            // Take keys that ran out of credits (overage disabled) out of
+            // load balancing, and put them back once they have credits again.
+            tokio::spawn(crate::account::watch_api_key_quotas(
+                Arc::downgrade(&auth_manager),
+                Arc::clone(&config),
+            ));
+        }
         Ok(Self {
             compat: Arc::new(CompatibilityPipeline::new()),
             config,

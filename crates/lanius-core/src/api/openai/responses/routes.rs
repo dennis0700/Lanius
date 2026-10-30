@@ -202,7 +202,7 @@ async fn prepare_with_failover(
         };
         match state
             .auth_manager
-            .failover_api_key_manager(current, &attempted)
+            .failover_api_key_manager(current, &attempted, &error)
             .await?
         {
             Some((index, next_auth)) => {
