@@ -77,6 +77,7 @@ lanius probe [prompt]           # live end-to-end request against the Kiro backe
 lanius probe --capture out.bin  # same, saving the raw upstream stream to a file
 lanius replay out.bin           # offline-decode a previously captured raw stream
 lanius usage                    # show the configured account's credit/quota usage
+                                # (every key, when KIRO_API_KEY lists several)
 lanius usage --json             # same, as raw Kiro JSON
 lanius models                   # list models currently resolvable by this gateway
 lanius models --json            # same, as JSON
