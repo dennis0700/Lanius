@@ -98,6 +98,16 @@ pub fn apply(enabled: bool) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let auto = AutoLaunch::new(APP_NAME, &app_str, &[] as &[&str]);
 
+    // Skip when the OS already matches: on macOS, deleting a login item that
+    // doesn't exist fails (AppleScript -1728), and enabling twice would add
+    // a duplicate login item.
+    let currently_enabled = auto
+        .is_enabled()
+        .map_err(|e| format!("Failed to query auto-launch state: {}", e))?;
+    if currently_enabled == enabled {
+        return Ok(());
+    }
+
     if enabled {
         auto.enable()
             .map_err(|e| format!("Failed to enable auto-launch: {}", e))
