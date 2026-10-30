@@ -35,7 +35,7 @@ export component ApiExamplesView {
                 }
 
                 Rectangle {
-                    width: 180px;
+                    width: 400px;
                     height: 32px;
                     border-radius: 16px;
                     background: Brand.zinc_100;
@@ -44,7 +44,7 @@ export component ApiExamplesView {
                         padding: 3px;
                         spacing: 2px;
 
-                        for name[index] in ["OpenAI", "Anthropic"]: Rectangle {
+                        for name[index] in ["Chat Completions", "Responses", "Anthropic"]: Rectangle {
                             border-radius: 13px;
                             background: root.api-type == index ? Theme.palette.surface : transparent;
                             Text {

@@ -1,7 +1,7 @@
 //! Generates ready-to-copy API usage snippets (curl / Python / TypeScript)
 //! for the "API examples" panel in the GUI, showing users how to call the
-//! locally running gateway with either the OpenAI-compatible or
-//! Anthropic-compatible API surface.
+//! locally running gateway with the OpenAI-compatible (Chat Completions or
+//! Responses) or Anthropic-compatible API surface.
 //!
 //! `controller.rs` drives this module: it tracks which [`ApiFlavor`] and
 //! [`Snippet`] tab the user has selected and calls [`render`] to regenerate
@@ -14,7 +14,10 @@
 /// Which API surface (wire format) a generated example targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiFlavor {
+    /// OpenAI Chat Completions (`/v1/chat/completions`).
     OpenAi,
+    /// OpenAI Responses (`/v1/responses`).
+    OpenAiResponses,
     Anthropic,
 }
 
@@ -28,22 +31,23 @@ pub enum Snippet {
 
 impl ApiFlavor {
     /// Maps a Slint UI tab index to an [`ApiFlavor`]. Any index other than
-    /// `1` (including out-of-range values) falls back to [`ApiFlavor::OpenAi`],
-    /// so an unexpected index from the UI never panics.
+    /// `1` or `2` (including out-of-range values) falls back to
+    /// [`ApiFlavor::OpenAi`], so an unexpected index from the UI never panics.
     ///
     /// # Examples
     ///
     /// ```ignore
     /// use crate::examples::ApiFlavor;
     ///
-    /// assert_eq!(ApiFlavor::from_index(1), ApiFlavor::Anthropic);
+    /// assert_eq!(ApiFlavor::from_index(1), ApiFlavor::OpenAiResponses);
+    /// assert_eq!(ApiFlavor::from_index(2), ApiFlavor::Anthropic);
     /// assert_eq!(ApiFlavor::from_index(42), ApiFlavor::OpenAi);
     /// ```
     pub fn from_index(index: i32) -> Self {
-        if index == 1 {
-            ApiFlavor::Anthropic
-        } else {
-            ApiFlavor::OpenAi
+        match index {
+            1 => ApiFlavor::OpenAiResponses,
+            2 => ApiFlavor::Anthropic,
+            _ => ApiFlavor::OpenAi,
         }
     }
 }
@@ -166,6 +170,45 @@ const response = await client.chat.completions.create({{
 
 console.log(response.choices[0].message.content);"#
         ),
+        (ApiFlavor::OpenAiResponses, Snippet::Curl) => format!(
+            r#"curl {base_url}/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer {key}" \
+  -d '{{
+    "model": "{MODEL}",
+    "input": "Hello!"
+  }}'"#
+        ),
+        (ApiFlavor::OpenAiResponses, Snippet::Python) => format!(
+            r#"from openai import OpenAI
+
+client = OpenAI(
+    base_url="{base_url}/v1",
+    api_key="{key}"
+)
+
+response = client.responses.create(
+    model="{MODEL}",
+    input="Hello!"
+)
+
+print(response.output_text)"#
+        ),
+        (ApiFlavor::OpenAiResponses, Snippet::TypeScript) => format!(
+            r#"import OpenAI from 'openai';
+
+const client = new OpenAI({{
+  baseURL: '{base_url}/v1',
+  apiKey: '{key}',
+}});
+
+const response = await client.responses.create({{
+  model: '{MODEL}',
+  input: 'Hello!',
+}});
+
+console.log(response.output_text);"#
+        ),
         (ApiFlavor::Anthropic, Snippet::Curl) => format!(
             r#"curl {base_url}/v1/messages \
   -H "Content-Type: application/json" \
@@ -254,6 +297,27 @@ mod tests {
     }
 
     #[test]
+    fn responses_snippets_target_the_responses_endpoint() {
+        let curl = render(
+            ApiFlavor::OpenAiResponses,
+            Snippet::Curl,
+            "127.0.0.1",
+            8000,
+            "sk-abc",
+        );
+        assert!(curl.contains("http://127.0.0.1:8000/v1/responses"));
+        assert!(curl.contains("Authorization: Bearer sk-abc"));
+        assert!(curl.contains(r#""input": "Hello!""#));
+        assert!(!curl.contains("chat/completions"));
+
+        for snippet in [Snippet::Python, Snippet::TypeScript] {
+            let code = render(ApiFlavor::OpenAiResponses, snippet, "127.0.0.1", 8000, "k");
+            assert!(code.contains("client.responses.create"), "{code}");
+            assert!(code.contains("output_text"), "{code}");
+        }
+    }
+
+    #[test]
     fn anthropic_snippets_use_the_messages_endpoint_and_header() {
         let code = render(ApiFlavor::Anthropic, Snippet::Curl, "127.0.0.1", 9000, "k");
         assert!(code.contains("/v1/messages"));
@@ -264,7 +328,11 @@ mod tests {
 
     #[test]
     fn wildcard_host_is_rendered_as_loopback() {
-        for flavor in [ApiFlavor::OpenAi, ApiFlavor::Anthropic] {
+        for flavor in [
+            ApiFlavor::OpenAi,
+            ApiFlavor::OpenAiResponses,
+            ApiFlavor::Anthropic,
+        ] {
             for snippet in [Snippet::Curl, Snippet::Python, Snippet::TypeScript] {
                 let code = render(flavor, snippet, "0.0.0.0", 8000, "k");
                 assert!(
@@ -285,7 +353,8 @@ mod tests {
     #[test]
     fn indices_map_to_the_ui_tab_order() {
         assert_eq!(ApiFlavor::from_index(0), ApiFlavor::OpenAi);
-        assert_eq!(ApiFlavor::from_index(1), ApiFlavor::Anthropic);
+        assert_eq!(ApiFlavor::from_index(1), ApiFlavor::OpenAiResponses);
+        assert_eq!(ApiFlavor::from_index(2), ApiFlavor::Anthropic);
         assert_eq!(
             ApiFlavor::from_index(7),
             ApiFlavor::OpenAi,
