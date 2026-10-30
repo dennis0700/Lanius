@@ -10,7 +10,7 @@
 //!
 //! Supported subcommands (see [`Cli`] for the exact flags/args):
 //! - *(no subcommand)* — validate the config and run the gateway in server
-//!   mode ([`serve`]), listening until a `Ctrl-C` / SIGINT is received.
+//!   mode ([`serve`]), listening until SIGINT (`Ctrl-C`) or SIGTERM is received.
 //! - `replay <raw-stream-file>` — offline-decode a previously captured raw
 //!   upstream byte stream (see [`commands::replay`]), useful for debugging
 //!   the SSE/event parser without hitting the network.
@@ -174,13 +174,37 @@ fn main() -> Result<()> {
 /// Runs the gateway in long-lived server mode.
 ///
 /// Delegates to [`lanius_core::server::serve`], passing a shutdown future that
-/// resolves when the process receives `Ctrl-C` (SIGINT), so the gateway can
-/// perform a graceful shutdown instead of being killed abruptly.
+/// resolves when the process receives `Ctrl-C` (SIGINT) or, on Unix, SIGTERM
+/// (what `docker stop` and Kubernetes send), so the gateway can perform a
+/// graceful shutdown instead of being killed abruptly.
 ///
 /// Side effects: binds and listens on the configured host/port (network I/O)
 /// until shutdown; blocks the calling task for the lifetime of the server.
 async fn serve(config: Config) -> Result<()> {
     let shutdown = async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        r = tokio::signal::ctrl_c() => {
+                            if let Err(e) = r {
+                                tracing::error!("failed to listen for shutdown signal: {e}");
+                            }
+                        }
+                        _ = sigterm.recv() => {}
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("failed to listen for SIGTERM: {e}");
+                    if let Err(e) = tokio::signal::ctrl_c().await {
+                        tracing::error!("failed to listen for shutdown signal: {e}");
+                    }
+                }
+            }
+        }
+        #[cfg(not(unix))]
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::error!("failed to listen for shutdown signal: {e}");
         }

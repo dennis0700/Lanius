@@ -190,8 +190,8 @@ curl -fsS http://127.0.0.1:18000/v1/models \
 - 在网络就绪后启动，失败时自动重启；
 - 以 `lanius:lanius` 身份运行，启用 `NoNewPrivileges`、`ProtectSystem=strict`、
   `ProtectHome`、`PrivateTmp`，仅 `/opt/lanius` 可写；
-- 使用 `SIGINT` 停止，这是 Lanius 用于优雅关闭的信号（它不处理 systemd 默认发送的
-  `SIGTERM`）。
+- 使用 `SIGINT` 停止。Lanius 收到 `SIGINT` 或 `SIGTERM` 都会优雅关闭；unit 保留
+  `SIGINT` 是因为旧版本只处理这个信号。
 
 日志输出到 stdout/stderr，由 journal 收集，不需要额外的日志文件。启用 `DEBUG_MODE`
 时，调试转储写入 `DEBUG_DIR`（默认 `debug_logs`），相对于 `WorkingDirectory`，即
