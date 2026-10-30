@@ -1,8 +1,8 @@
 //! HTTP-facing API surface of the Lanius gateway.
 //!
-//! Lanius proxies requests from clients speaking either the Anthropic
-//! Messages API or the OpenAI Chat Completions API, converts them into the
-//! Kiro wire format, forwards them to the upstream Kiro service via
+//! Lanius proxies requests from clients speaking the Anthropic Messages API,
+//! the OpenAI Chat Completions API, or the OpenAI Responses API, converts them
+//! into the Kiro wire format, forwards them to the upstream Kiro service via
 //! [`crate::upstream`], and translates the upstream response/stream back into
 //! the client's expected protocol.
 //!
@@ -11,7 +11,8 @@
 //! - `anthropic`: routes, request/response models, and SSE encoding for
 //!   the Anthropic Messages API (`/v1/messages`, `/v1/messages/count_tokens`).
 //! - `openai`: routes, request/response models, and SSE encoding for the
-//!   OpenAI Chat Completions API (`/v1/chat/completions`, `/v1/models`).
+//!   OpenAI Chat Completions API (`/v1/chat/completions`, `/v1/models`) and
+//!   Responses API (`/v1/responses`).
 //!
 //! Both submodules share cross-cutting infrastructure from
 //! [`crate::auth`] (token refresh), [`crate::convert`] (protocol-to-Kiro
@@ -66,6 +67,6 @@ pub(crate) use anthropic::{
 };
 pub use openai::{
     ChatCompletionRequest, ChatMessage, OpenAIMessageContent, OpenAiFormatContext, OpenAiState,
-    ReasoningEffort, Tool, ToolFunction, collect_openai_response, encode_openai_sse,
-    router as openai_router,
+    ReasoningEffort, ResponsesInput, ResponsesReasoning, ResponsesRequest, ResponsesTool, Tool,
+    ToolFunction, collect_openai_response, encode_openai_sse, router as openai_router,
 };

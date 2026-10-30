@@ -12,6 +12,7 @@
 | `GET /health` | `server::app`（内联） | 无 |
 | `GET /`, `GET /v1/models` | `api::openai::routes::{root,models}` | Bearer `PROXY_API_KEY` |
 | `POST /v1/chat/completions` | `api::openai::routes::chat_completions` | Bearer `PROXY_API_KEY` |
+| `POST /v1/responses` | `api::openai::responses::routes::create_response` | Bearer `PROXY_API_KEY` |
 | `POST /v1/messages` | `api::anthropic::routes::messages` | `x-api-key` / Bearer `PROXY_API_KEY` |
 | `POST /v1/messages/count_tokens` | `api::anthropic::routes::count_tokens_endpoint` | 同上 |
 | `GET /usage`, `GET /account` | `server::{usage,account}` | Bearer `PROXY_API_KEY` |
@@ -29,6 +30,14 @@
 3. **上游调用**：`KiroHttpClient::request_with_retry`（缓冲路径下为 `request_bytes_with_retry`）将 payload POST 到 `config.generate_assistant_response_url()`，并按照 [auth.md](auth.md#重试与刷新策略上游客户端) 中的策略进行重试。
 4. **流式分支**（`request.stream == true`）：`streaming_response` 用 `preflight_upstream`/`preflight_first_byte` 包装上游字节流（将 HTTP 层面的错误以规范的 SSE 错误帧呈现，而不是静默地返回空流），随后 `api::openai::sse::encode_openai_sse` 将解码后的 `KiroEvent` 流转换为 `chat.completion.chunk` SSE 帧（见 [streaming.md](streaming.md)）。
 5. **缓冲分支**：`api::openai::sse::collect_openai_response` 驱动 `upstream::collect_stream_to_result` 运行至结束，然后由 `response_value_from_result` 组装最终的 JSON 响应体：恢复原始工具名（见 [compatibility.md](compatibility.md)），检测截断并在需要时记录恢复条目，并计算 token 用量（见 [truncation.md](truncation.md) 以及 [architecture.md](architecture.md) 中关于 tokenizer 的说明）。
+
+## OpenAI：`POST /v1/responses`
+
+与 Chat Completions 走同一条流水线（认证、API key 会话亲和/故障转移、模型解析、截断恢复、服务端 `web_search`），只是转换与输出是 Responses 专用的：
+
+1. **`api::openai::responses::routes::create_response`** 将请求体反序列化为 `ResponsesRequest`。Lanius 不保存任何状态，因此 `previous_response_id`（以及 `item_reference` 输入项）会以 400 拒绝；客户端需在 `input` 中发送完整对话。会话亲和依次优先使用 `x-session-id`、`prompt_cache_key`、`user`。
+2. **`convert::responses_to_kiro`** 将输入项*直接*转换为 `UnifiedMessage`/`UnifiedTool`，再调用共享的 `build_kiro_payload` 核心——中间不会构造 Chat Completions 请求。`instructions` 与 `system`/`developer` 消息成为 system prompt；`function_call`/`function_call_output`（以及 `custom_tool_call`/`custom_tool_call_output`）成为 Kiro 的 `toolUses`/`toolResults`；`reasoning` 项和内置工具记录会被跳过。`custom`（自由格式）工具以只有一个 `input` 字符串参数的函数提供给模型，其调用再映射回 `custom_tool_call` 输出项。
+3. **`api::openai::responses::sse::ResponseBuilder`** 将 `SearchLoop` 事件流折叠为输出项（`reasoning`、`message`、`web_search_call`、`function_call`/`custom_tool_call`）。流式请求得到语义化 SSE 事件（`response.created`、`response.output_item.added`、`response.output_text.delta`……`response.completed` / `response.incomplete` / `response.failed`）；非流式请求运行同一个 builder，返回最终的 `response` 对象。
 
 ## Anthropic：`POST /v1/messages`
 

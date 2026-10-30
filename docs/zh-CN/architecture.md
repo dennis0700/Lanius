@@ -25,10 +25,11 @@ graph LR
     lib["lib.rs<br/>crate 根；架构概览 + 精选的重导出"]
 
     subgraph api["api/ — 面向两种客户端协议的 HTTP 路由"]
-        subgraph api_openai["openai/ — /v1/models, /v1/chat/completions"]
+        subgraph api_openai["openai/ — /v1/models, /v1/chat/completions, /v1/responses"]
             api_openai_models["models.rs<br/>serde 线上类型"]
             api_openai_routes["routes.rs<br/>axum handler，OpenAiState"]
             api_openai_sse["sse.rs<br/>流式编码器 + 非流式响应构建器"]
+            api_openai_responses["responses/<br/>Responses API：请求类型、handler、输出项 + SSE 事件"]
         end
         subgraph api_anthropic["anthropic/ — /v1/messages, /v1/messages/count_tokens"]
             api_anthropic_models["models.rs<br/>serde 线上类型"]
@@ -41,6 +42,7 @@ graph LR
         convert_core["core.rs<br/>与提供方无关的 UnifiedMessage/UnifiedTool + build_kiro_payload"]
         convert_openai["openai.rs<br/>OpenAI 请求 -&gt; UnifiedMessage/UnifiedTool"]
         convert_anthropic["anthropic.rs<br/>Anthropic 请求 -&gt; UnifiedMessage/UnifiedTool"]
+        convert_responses["responses.rs<br/>OpenAI Responses 请求 -&gt; UnifiedMessage/UnifiedTool（直接转换）"]
         convert_guards["guards.rs<br/>payload 大小限制，裁剪后的 tool result 修复"]
     end
 

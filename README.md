@@ -101,7 +101,9 @@ for the full, authoritative list and defaults:
 
 The gateway exposes:
 
-- `GET /v1/models`, `POST /v1/chat/completions` — OpenAI-compatible API
+- `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses` — OpenAI-compatible API
+  (Chat Completions and Responses; `/v1/responses` is stateless, so send the
+  full conversation in `input` instead of `previous_response_id`)
 - `POST /v1/messages`, `POST /v1/messages/count_tokens` — Anthropic-compatible API
 - `GET /usage`, `GET /account` — usage/quota for the configured account, gated by `PROXY_API_KEY`
 - `GET /health` — unauthenticated health check

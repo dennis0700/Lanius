@@ -1,6 +1,7 @@
 //! axum route handlers for the OpenAI Chat Completions API.
 //!
-//! Wires `/`, `/health`, `/v1/models`, and `/v1/chat/completions` to the
+//! Wires `/`, `/health`, `/v1/models`, `/v1/chat/completions`, and
+//! `/v1/responses` (handled in [`super::responses`]) to the
 //! shared [`crate::auth::AuthManager`] and Kiro upstream client.
 //! Responsibilities specific to this module:
 //! - Bearer token authentication (`Authorization: Bearer <key>`).
@@ -116,6 +117,7 @@ pub fn router() -> Router<OpenAiState> {
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/responses", post(super::responses::create_response))
 }
 
 /// `GET /` — a minimal unauthenticated liveness/info probe.
@@ -390,13 +392,21 @@ fn api_key_affinity_id(
 
 /// Builds the streaming `text/event-stream` [`Response`] for a request,
 /// encoding its upstream events with [`encode_openai_sse`].
-/// If the encoder itself errors mid-stream, emits a `data: [DONE]` frame
-/// and terminates rather than propagating the error into the HTTP body.
 fn streaming_response(
     events: impl futures_util::Stream<Item = crate::error::Result<KiroEvent>> + Send + 'static,
     context: OpenAiFormatContext,
 ) -> Response {
-    let frames = encode_openai_sse(events, context);
+    event_stream_response(encode_openai_sse(events, context), Some("data: [DONE]\n\n"))
+}
+
+/// Wraps encoded SSE `frames` in a `text/event-stream` [`Response`] with
+/// keepalive comments. If the encoder itself errors mid-stream, emits
+/// `error_frame` (if any) and terminates rather than propagating the error
+/// into the HTTP body.
+pub(super) fn event_stream_response(
+    frames: impl futures_util::Stream<Item = crate::error::Result<String>> + Send + 'static,
+    error_frame: Option<&'static str>,
+) -> Response {
     let body_stream = async_stream::stream! {
         futures_util::pin_mut!(frames);
         // SSE comment heartbeats keep idle connections alive while the
@@ -413,7 +423,9 @@ fn streaming_response(
                     Some(Ok(frame)) => yield Ok(bytes::Bytes::from(frame)),
                     Some(Err(error)) => {
                         tracing::error!(error = %error, "OpenAI SSE encoder failed");
-                        yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
+                        if let Some(frame) = error_frame {
+                            yield Ok(bytes::Bytes::from_static(frame.as_bytes()));
+                        }
                         break;
                     }
                     None => break,
@@ -437,7 +449,10 @@ fn streaming_response(
 /// [`constant_time_eq`]. Returns `Err` with a boxed 401 response on
 /// failure (boxed to keep the `Ok` case's size small, since `Response` is
 /// large).
-fn authorize(headers: &HeaderMap, proxy_api_key: &str) -> std::result::Result<(), Box<Response>> {
+pub(super) fn authorize(
+    headers: &HeaderMap,
+    proxy_api_key: &str,
+) -> std::result::Result<(), Box<Response>> {
     let supplied = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -475,7 +490,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 /// and reports it as a `kiro_api_error`; other variants fall back to
 /// simpler `{"detail": ...}` bodies with a status derived from
 /// `error.http_status()`.
-fn gateway_error_response(error: GatewayError) -> Response {
+pub(super) fn gateway_error_response(error: GatewayError) -> Response {
     let detail = error.log_detail();
     let status =
         StatusCode::from_u16(error.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -499,7 +514,7 @@ fn gateway_error_response(error: GatewayError) -> Response {
 
 /// Builds the 422 response returned for malformed or empty-message
 /// requests.
-fn validation_error(message: &str) -> Response {
+pub(super) fn validation_error(message: &str) -> Response {
     let response = (
         StatusCode::UNPROCESSABLE_ENTITY,
         Json(json!({"detail": message, "body": ""})),
@@ -622,7 +637,7 @@ fn message_content_text(content: Option<&OpenAIMessageContent>) -> String {
 
 /// Whether the account's Kiro profile allows web tools (see
 /// [`KiroHttpClient::web_tools_enabled`]).
-async fn web_tools_allowed(auth: &Arc<AuthManager>, config: &Config) -> bool {
+pub(super) async fn web_tools_allowed(auth: &Arc<AuthManager>, config: &Config) -> bool {
     match KiroHttpClient::new(auth.clone(), config) {
         Ok(client) => client.web_tools_enabled().await,
         Err(_) => true,
