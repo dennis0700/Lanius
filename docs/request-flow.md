@@ -10,6 +10,7 @@ Line/file references point at the handler functions doing the work.
 | `GET /health` | `server::app` (inline) | none |
 | `GET /`, `GET /v1/models` | `api::openai::routes::{root,models}` | Bearer `PROXY_API_KEY` |
 | `POST /v1/chat/completions` | `api::openai::routes::chat_completions` | Bearer `PROXY_API_KEY` |
+| `POST /v1/responses` | `api::openai::responses::routes::create_response` | Bearer `PROXY_API_KEY` |
 | `POST /v1/messages` | `api::anthropic::routes::messages` | `x-api-key` / Bearer `PROXY_API_KEY` |
 | `POST /v1/messages/count_tokens` | `api::anthropic::routes::count_tokens_endpoint` | same as above |
 | `GET /usage`, `GET /account` | `server::{usage,account}` | Bearer `PROXY_API_KEY` |
@@ -59,6 +60,35 @@ restricted to `localhost`/`127.0.0.1` origins (`server::local_cors`).
    truncation and records a recovery entry if needed, and computes token
    usage (see [truncation.md](truncation.md) and the tokenizer notes in
    [architecture.md](architecture.md)).
+
+## OpenAI: `POST /v1/responses`
+
+Same pipeline as Chat Completions (auth, API-key affinity/failover,
+model resolution, truncation recovery, server-side `web_search`), with
+Responses-specific conversion and output:
+
+1. **`api::openai::responses::routes::create_response`** deserializes a
+   `ResponsesRequest`. Lanius stores nothing, so `previous_response_id`
+   (and `item_reference` input items) are rejected with 400; clients send
+   the full conversation in `input`. Session affinity prefers
+   `x-session-id`, then `prompt_cache_key`, then `user`.
+2. **`convert::responses_to_kiro`** converts the input items *directly* to
+   `UnifiedMessage`/`UnifiedTool` and calls the shared
+   `build_kiro_payload` core — no Chat Completions request is built in
+   between. `instructions` and `system`/`developer` messages become the
+   system prompt; `function_call`/`function_call_output` (and
+   `custom_tool_call`/`custom_tool_call_output`) become Kiro `toolUses` /
+   `toolResults`; `reasoning` items and built-in tool records are skipped.
+   `custom` (freeform) tools are offered as a function with one `input`
+   string and mapped back to `custom_tool_call` items.
+3. **`api::openai::responses::sse::ResponseBuilder`** folds the
+   `SearchLoop` event stream into output items (`reasoning`, `message`,
+   `web_search_call`, `function_call`/`custom_tool_call`). Streaming
+   requests get the semantic SSE events (`response.created`,
+   `response.output_item.added`, `response.output_text.delta`, ...,
+   `response.completed` / `response.incomplete` / `response.failed`);
+   non-streaming requests run the same builder and get the final
+   `response` object.
 
 ## Anthropic: `POST /v1/messages`
 
