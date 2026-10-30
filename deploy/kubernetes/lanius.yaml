@@ -1,0 +1,86 @@
+# Example Kubernetes deployment for the Lanius gateway.
+# Build/push the image from the repo's Dockerfile, replace `image:` and the
+# Secret values, then: kubectl apply -f lanius.yaml
+# See docs/container.md for credential options and notes.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lanius
+type: Opaque
+stringData:
+  PROXY_API_KEY: change-me-to-a-long-random-value   # openssl rand -hex 32
+  KIRO_API_KEY: ksk_xxxxxxxx                         # comma-separate several keys
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lanius
+  labels:
+    app: lanius
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lanius
+  template:
+    metadata:
+      labels:
+        app: lanius
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: lanius
+          image: ghcr.io/your-org/lanius:latest
+          ports:
+            - name: http
+              containerPort: 18000
+          env:
+            - name: KIRO_REGION
+              value: us-east-1   # must match the region KIRO_API_KEY was issued for
+            - name: LOG_LEVEL
+              value: INFO
+          envFrom:
+            - secretRef:
+                name: lanius
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      # Streaming responses can run for minutes; give in-flight requests time
+      # to finish after SIGTERM.
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lanius
+spec:
+  selector:
+    app: lanius
+  ports:
+    - name: http
+      port: 18000
+      targetPort: http

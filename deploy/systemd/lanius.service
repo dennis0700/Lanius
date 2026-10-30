@@ -11,8 +11,8 @@ ExecStart=/opt/lanius/lanius
 EnvironmentFile=/opt/lanius/lanius.env
 Restart=on-failure
 RestartSec=2
-# lanius shuts down gracefully on SIGINT (Ctrl-C); systemd sends SIGTERM by
-# default, which would terminate it without draining in-flight requests.
+# lanius shuts down gracefully on SIGINT or SIGTERM. SIGINT is kept because
+# older releases only handled SIGINT.
 KillSignal=SIGINT
 TimeoutStopSec=30
 

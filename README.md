@@ -118,6 +118,13 @@ Prebuilt static Linux binaries (amd64/arm64) are attached to each GitHub
 Release. See [`docs/deployment.md`](docs/deployment.md) for installing
 `lanius` and running it as a hardened systemd service.
 
+### Docker / Kubernetes
+
+`docker build -t lanius .` builds a ~11 MB non-root image from the repo-root
+[`Dockerfile`](Dockerfile). See [`docs/container.md`](docs/container.md) and
+the example manifest in
+[`deploy/kubernetes/lanius.yaml`](deploy/kubernetes/lanius.yaml).
+
 ## Updating
 
 - **Desktop app**: checks GitHub for a newer release automatically (toggle in
