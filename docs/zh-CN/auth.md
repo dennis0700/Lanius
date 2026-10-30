@@ -22,7 +22,7 @@
 
 ## API key（headless 模式）
 
-设置 `KIRO_API_KEY`（在 app.kiro.dev 生成的长期有效 `ksk_...` key，适用于 Pro、Pro+、Pro Max 和 Power 订阅）会选择 `AuthType::ApiKey`，并绕过上述所有来源：`Credentials::load` 只返回该 Key，因此不会混入过期的 `kiro-cli` 登录状态。该变量可填写一个 Key，也可填写逗号分隔的多个 Key；CLI 和 GUI 共用同一配置和解析方式。聊天请求会根据 `x-session-id`、OpenAI `user`、Anthropic `metadata.user_id` 或首条 user 消息哈希分配，并在进程运行期间保持会话粘性。如果认证、网络、限流、服务端或首段流建立失败，请求会尝试其他 Key 并推进该会话的 Key 分配；`/usage` 等控制面接口仍使用配置列表中的第一个 Key。该模式下：
+设置 `KIRO_API_KEY`（在 app.kiro.dev 生成的长期有效 `ksk_...` key，适用于 Pro、Pro+、Pro Max 和 Power 订阅）会选择 `AuthType::ApiKey`，并绕过上述所有来源：`Credentials::load` 只返回该 Key，因此不会混入过期的 `kiro-cli` 登录状态。该变量可填写一个 Key，也可填写逗号分隔的多个 Key（仅限 CLI / 服务端；桌面 GUI 只接受一个 Key，保存和启动时会拒绝多个 Key）。聊天请求会根据 `x-session-id`、OpenAI `user`、Anthropic `metadata.user_id` 或首条 user 消息哈希分配，并在进程运行期间保持会话粘性。如果认证、网络、限流、服务端或首段流建立失败，请求会尝试其他 Key 并推进该会话的 Key 分配；`/usage` 等控制面接口仍使用配置列表中的第一个 Key。该模式下：
 
 - **没有生命周期。** `access_token` 原样返回 key；没有过期检查、刷新、SQLite 重新加载或写回。`force_refresh` 返回错误，提示用户检查或重新生成 key。单个 Key 的上游客户端不会重试 403；网关请求处理层会尝试配置的其他 Key。
 - **多一个请求头。** 每个上游请求都带 `tokentype: API_KEY`。缺少它时，Kiro 会把 bearer 值当作 OAuth token，并返回 `ValidationException: profileArn is required for this request`。

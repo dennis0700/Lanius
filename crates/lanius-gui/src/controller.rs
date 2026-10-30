@@ -474,6 +474,11 @@ impl Controller {
             self.set_error(message);
             return;
         }
+        if config.has_multiple_api_keys() {
+            let message = self.t("multipleApiKeysNotSupported");
+            self.set_error(message);
+            return;
+        }
 
         {
             self.state.lock().await.pending = Some(Pending::Start);
@@ -778,6 +783,15 @@ impl Controller {
 
         let base = self.current_config().await;
         let updated = ui_state::apply_form(&base, &form);
+
+        if updated.has_multiple_api_keys() {
+            let message = self.t("multipleApiKeysNotSupported");
+            self.with_ui(move |ui| {
+                ui.set_is_saving(false);
+                ui.set_save_error(message.into());
+            });
+            return;
+        }
 
         if let Err(e) = crate::autostart::apply(updated.auto_launch) {
             tracing::warn!("auto-launch apply failed: {e}");

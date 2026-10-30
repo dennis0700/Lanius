@@ -43,8 +43,8 @@ Setting `KIRO_API_KEY` to a long-lived `ksk_...` key generated at
 app.kiro.dev, available on Pro, Pro+, Pro Max and Power plans, selects
 `AuthType::ApiKey` and short-circuits every source above: `Credentials::load`
 returns only the key, so a stale `kiro-cli` login can never be mixed in.
-The value may contain one key or a comma-separated list; the CLI and GUI use
-the same setting and parser. Chat requests are assigned by hashing
+The value may contain one key or a comma-separated list (CLI / server only;
+the desktop GUI accepts exactly one key and rejects a list on save and start). Chat requests are assigned by hashing
 `x-session-id`, OpenAI `user`, Anthropic `metadata.user_id`, or the first user
 message, and the process keeps a session on that key. If authentication,
 network, rate-limit, server, or first-stream setup fails, the request tries

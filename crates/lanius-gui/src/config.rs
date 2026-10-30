@@ -78,8 +78,8 @@ pub struct AppConfig {
     pub refresh_token: Option<String>,
     pub kiro_creds_file: Option<String>,
     pub kiro_cli_db_file: Option<String>,
-    /// One Kiro API key (`ksk_...`) or a comma-separated list, used when
-    /// `auth_method` is `ApiKey`.
+    /// Long-lived Kiro API key (`ksk_...`), used when `auth_method` is
+    /// `ApiKey`. Exactly one key; see [`AppConfig::has_multiple_api_keys`].
     #[serde(default)]
     pub kiro_api_key: Option<String>,
 
@@ -176,6 +176,30 @@ impl AppConfig {
                 .as_deref()
                 .is_some_and(|keys| keys.split(',').any(|key| !key.trim().is_empty())),
         }
+    }
+
+    /// Reports whether the API-key auth method is selected with more than
+    /// one (comma-separated) key. The desktop app binds a single Kiro
+    /// account, so such a config is rejected on save and on start; the
+    /// multi-key pool is only meant for the CLI / server deployments.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use crate::config::{AppConfig, AuthMethod};
+    ///
+    /// let mut config = AppConfig { auth_method: AuthMethod::ApiKey, ..Default::default() };
+    /// config.kiro_api_key = Some("ksk_a,ksk_b".to_string());
+    /// assert!(config.has_multiple_api_keys());
+    /// ```
+    pub fn has_multiple_api_keys(&self) -> bool {
+        self.auth_method == AuthMethod::ApiKey
+            && self.kiro_api_key.as_deref().is_some_and(|keys| {
+                keys.split(',')
+                    .filter(|key| !key.trim().is_empty())
+                    .nth(1)
+                    .is_some()
+            })
     }
 
     /// Returns the host to use when the GUI itself needs to *connect to*
@@ -527,6 +551,25 @@ mod tests {
         assert_eq!(cfg.auth_method, AuthMethod::ApiKey);
         assert_eq!(cfg.kiro_cli_db_file, None);
         assert_eq!(cfg.kiro_creds_file, None);
+    }
+
+    #[test]
+    fn multiple_api_keys_are_detected_only_for_the_api_key_method() {
+        let mut cfg = AppConfig {
+            auth_method: AuthMethod::ApiKey,
+            kiro_api_key: Some("ksk_a".into()),
+            ..Default::default()
+        };
+        assert!(!cfg.has_multiple_api_keys());
+        cfg.kiro_api_key = Some(" ksk_a , ".into());
+        assert!(!cfg.has_multiple_api_keys(), "empty pieces are ignored");
+        cfg.kiro_api_key = Some("ksk_a, ksk_b".into());
+        assert!(cfg.has_multiple_api_keys());
+        cfg.auth_method = AuthMethod::RefreshToken;
+        assert!(
+            !cfg.has_multiple_api_keys(),
+            "an unused key field is ignored"
+        );
     }
 
     #[test]

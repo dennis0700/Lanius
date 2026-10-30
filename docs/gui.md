@@ -74,7 +74,10 @@ selected" that `lanius_core::Config` doesn't need to know about directly)
 into the actual `lanius_core::Config` the core gateway understands.
 Only the credential field of the selected method is copied: Kiro CLI
 database, credentials file, refresh token, or Kiro API key (`ksk_...`,
-mapped to `kiro_api_key`; see [auth.md](auth.md)).
+mapped to `kiro_api_key`; see [auth.md](auth.md)). The API key field
+accepts exactly one key: the desktop app binds a single account, so a
+comma-separated list is rejected on save and on start (the multi-key pool is
+for CLI / server deployments only).
 
 Status/log messages produced here go through the same shared `LogBuffer`
 as `log_capture.rs`'s `tracing`-based capture, so gateway lifecycle events
