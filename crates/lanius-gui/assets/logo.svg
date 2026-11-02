@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Lanius (伯劳) app logo: a shrike perched on a thorny branch -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="breast" x1="1" y1="0" x2="0" y2="0.6">
+      <stop offset="0.35" stop-color="#FFF7ED"/>
+      <stop offset="1" stop-color="#E07A3A"/>
+    </linearGradient>
+    <linearGradient id="crown" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#CBD5E1"/>
+      <stop offset="1" stop-color="#94A3B8"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <rect x="100" y="100" width="824" height="824" rx="185"/>
+    </clipPath>
+    <clipPath id="body">
+      <path d="M560 255 C625 255 675 295 690 355 L685 412 C700 480 680 580 600 650 C540 700 450 705 400 670 C350 630 345 540 370 470 C395 390 470 255 560 255 Z"/>
+    </clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#0F172A" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <!-- background + sun -->
+    <rect x="100" y="100" width="824" height="824" fill="url(#bg)"/>
+    <circle cx="600" cy="380" r="240" fill="#FFFFFF" opacity="0.18"/>
+
+    <!-- thorny branch -->
+    <g fill="#4A2C17">
+      <path d="M140 772 C350 748 600 738 900 686" fill="none" stroke="#4A2C17" stroke-width="26" stroke-linecap="round"/>
+      <path d="M250 762 L232 712 L274 756 Z"/>
+      <path d="M690 724 L716 676 L714 732 Z"/>
+      <path d="M800 706 L838 742 L784 716 Z"/>
+      <path d="M380 752 L402 800 L360 760 Z"/>
+    </g>
+
+    <g filter="url(#shadow)">
+      <!-- tail -->
+      <path d="M405 610 L238 838 C230 852 246 860 258 850 L470 660 Z" fill="#111827"/>
+
+      <!-- body with plumage regions -->
+      <g clip-path="url(#body)">
+        <rect x="300" y="200" width="450" height="550" fill="url(#breast)"/>
+        <ellipse cx="500" cy="300" rx="230" ry="105" fill="url(#crown)"/>
+        <!-- black bandit mask through the eye -->
+        <path d="M700 330 C640 326 560 338 470 380 C445 395 452 430 482 426 C560 412 640 410 700 422 Z" fill="#111827"/>
+      </g>
+
+      <!-- wing -->
+      <path d="M470 430 C560 450 595 540 545 612 C495 672 405 718 330 742 C360 650 380 520 470 430 Z" fill="#1F2937"/>
+      <path d="M520 520 C500 590 450 650 380 700 M490 480 C470 560 430 620 360 680" fill="none" stroke="#475569" stroke-width="8" stroke-linecap="round"/>
+      <ellipse cx="478" cy="560" rx="34" ry="15" transform="rotate(-55 478 560)" fill="#F8FAFC"/>
+
+      <!-- hooked beak -->
+      <path d="M684 350 C722 346 752 364 768 394 C774 410 762 424 750 412 C738 402 720 402 686 414 Z" fill="#111827"/>
+
+      <!-- eye -->
+      <circle cx="612" cy="376" r="24" fill="#020617" stroke="#475569" stroke-width="5"/>
+      <circle cx="620" cy="368" r="7" fill="#FFFFFF"/>
+    </g>
+
+    <!-- legs gripping the branch -->
+    <g fill="none" stroke="#334155" stroke-width="12" stroke-linecap="round">
+      <path d="M505 680 L500 742 M500 742 L478 750 M500 742 L522 748"/>
+      <path d="M565 668 L568 734 M568 734 L546 742 M568 734 L590 738"/>
+    </g>
+  </g>
+</svg>
