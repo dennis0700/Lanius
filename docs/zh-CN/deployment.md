@@ -137,6 +137,16 @@ LOG_LEVEL=INFO
 
   所有 Key 必须属于同一区域。可用 `x-session-id` 显式指定会话；也会回退使用 OpenAI `user`、Anthropic
   `metadata.user_id`，或首条 user 消息。
+
+  查看每个 Key 的 credit 用量：用与服务相同的环境运行 `lanius usage`。各 Key 会并发查询，
+  逐个输出为 `[key N/M] <打码后的 key>` 及其用量；某个 Key 查询失败只显示一行 `error`，
+  不影响其他 Key，只有全部失败时命令才以非零状态退出。加 `--json` 输出数组，每项为
+  `{"index", "key", "usage"}`（失败时为 `{"index", "key", "error"}`）：
+
+  ```sh
+  sudo -u lanius sh -c 'set -a; . /opt/lanius/lanius.env; set +a; exec /opt/lanius/lanius usage'
+  sudo -u lanius sh -c 'set -a; . /opt/lanius/lanius.env; set +a; exec /opt/lanius/lanius usage --json'
+  ```
 - **`REFRESH_TOKEN`**（可选搭配 `PROFILE_ARN`）：直接写在 `lanius.env` 中。
 - **`KIRO_CREDS_FILE`**：从已登录的机器上复制 JSON token 文件（Kiro 默认位置为
   `~/.aws/sso/cache/kiro-auth-token.json`）：

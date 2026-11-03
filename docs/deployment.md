@@ -145,6 +145,18 @@ Pick one source (the precedence order is described in [auth.md](auth.md)):
 
   Supply keys from the same region. Send `x-session-id` for explicit affinity; OpenAI `user`,
   Anthropic `metadata.user_id`, or the first user message provide fallbacks.
+
+  To check the credit usage of every key, run `lanius usage` with the same
+  environment as the service. Each key is queried concurrently and listed as
+  `[key N/M] <masked key>` followed by its usage; a key that fails shows an
+  `error` line without hiding the others, and the command only exits non-zero
+  if every key fails. Add `--json` for an array of
+  `{"index", "key", "usage"}` (or `{"index", "key", "error"}`) entries:
+
+  ```sh
+  sudo -u lanius sh -c 'set -a; . /opt/lanius/lanius.env; set +a; exec /opt/lanius/lanius usage'
+  sudo -u lanius sh -c 'set -a; . /opt/lanius/lanius.env; set +a; exec /opt/lanius/lanius usage --json'
+  ```
 - **`REFRESH_TOKEN`** (plus optional `PROFILE_ARN`) set directly in
   `lanius.env`.
 - **`KIRO_CREDS_FILE`**: copy the JSON token file from a machine where you're
