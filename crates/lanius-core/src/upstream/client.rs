@@ -19,7 +19,9 @@ use serde_json::Value;
 
 use crate::auth::AuthManager;
 use crate::config::{BASE_RETRY_DELAY, Config, MAX_RETRIES};
-use crate::error::{GatewayError, Result, classify_network_error, enhance_kiro_error};
+use crate::error::{
+    GatewayError, KiroErrorReason, Result, classify_network_error, enhance_kiro_error,
+};
 
 // Total request timeout for non-streaming calls; streaming calls
 // deliberately have no total timeout (see `client_timeouts`) since a
@@ -305,7 +307,11 @@ impl KiroHttpClient {
                     );
                     tokio::time::sleep(retry_delay(attempt)).await;
                 }
-                Ok(response) => return Err(upstream_error(response).await),
+                Ok(response) => {
+                    let error = upstream_error(response).await;
+                    self.log_invalid_model_key(&error);
+                    return Err(error);
+                }
                 Err(error) => {
                     let info = classify_network_error(&error);
                     tracing::warn!(
@@ -342,6 +348,22 @@ impl KiroHttpClient {
                 "request retry loop completed without response or error".to_string(),
             )
         }))
+    }
+
+    /// Logs, at DEBUG, the masked `KIRO_API_KEY` that Kiro rejected with
+    /// `INVALID_MODEL_ID`, since some Kiro accounts cannot use some models.
+    fn log_invalid_model_key(&self, error: &GatewayError) {
+        if let GatewayError::Upstream { status, info } = error {
+            if info.reason == KiroErrorReason::InvalidModelId.as_str() {
+                if let Some(key) = self.auth_manager.masked_api_key() {
+                    tracing::debug!(
+                        status,
+                        kiro_api_key = %key,
+                        "upstream rejected the model as INVALID_MODEL_ID for this KIRO_API_KEY"
+                    );
+                }
+            }
+        }
     }
 
     /// Direct access to the non-streaming `reqwest::Client`, for callers
@@ -514,5 +536,76 @@ mod tests {
             let auth = Arc::new(AuthManager::new(config.clone()).unwrap());
             assert!(KiroHttpClient::new(auth, &config).is_ok());
         }
+    }
+
+    // Serves one HTTP 400 response with `body` and returns its URL.
+    async fn one_shot_400(body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    async fn request_and_capture(api_key: &str, body: &'static str) -> Vec<String> {
+        let (logs, _guard) = crate::test_log::CapturedLogs::install();
+        let url = one_shot_400(body).await;
+        let config = Config {
+            kiro_api_key: Some(api_key.to_owned()),
+            ..Config::default()
+        };
+        let auth = Arc::new(AuthManager::new(config).unwrap());
+        let client = KiroHttpClient::with_client(auth, reqwest::Client::new());
+        let error = client
+            .request_bytes_with_retry(Method::POST, &url, None, None, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, GatewayError::Upstream { status: 400, .. }));
+        logs.lines()
+    }
+
+    const INVALID_MODEL_BODY: &str = r#"{"message":"Invalid model. Please select a different model to continue.","reason":"INVALID_MODEL_ID"}"#;
+
+    #[tokio::test]
+    async fn invalid_model_id_logs_masked_api_key_at_debug() {
+        let lines = request_and_capture("ksk_0123456789abcdefSECRETTAIL", INVALID_MODEL_BODY).await;
+        let line = lines
+            .iter()
+            .find(|line| line.contains("INVALID_MODEL_ID"))
+            .unwrap_or_else(|| panic!("no INVALID_MODEL_ID log: {lines:?}"));
+        assert!(line.starts_with("DEBUG"), "{line}");
+        assert!(
+            line.contains("kiro_api_key=ksk_****************SECRETTAIL"),
+            "{line}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains("0123456789abcdef")),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn other_400s_do_not_log_the_api_key() {
+        let lines = request_and_capture(
+            "ksk_0123456789abcdefSECRETTAIL",
+            r#"{"message":"Improperly formed request.","reason":"UNKNOWN"}"#,
+        )
+        .await;
+        assert!(
+            lines.iter().all(|line| !line.contains("kiro_api_key")),
+            "{lines:?}"
+        );
     }
 }

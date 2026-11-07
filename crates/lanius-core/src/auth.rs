@@ -743,6 +743,28 @@ impl AuthManager {
         self.config.uses_api_key()
     }
 
+    /// The `KIRO_API_KEY` this manager sends, masked by [`mask_api_key`] for
+    /// logs, or `None` when not authenticating with an API key. With a
+    /// comma-separated list this is the first key; a per-key pool manager
+    /// returns its own key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::auth::AuthManager;
+    /// use lanius_core::Config;
+    ///
+    /// let auth = AuthManager::new(Config {
+    ///     kiro_api_key: Some("ksk_0123456789abcdefTAIL".into()),
+    ///     ..Config::default()
+    /// }).expect("valid config");
+    /// assert_eq!(auth.masked_api_key().as_deref(), Some("ksk_****************TAIL"));
+    /// assert_eq!(AuthManager::new(Config::default()).unwrap().masked_api_key(), None);
+    /// ```
+    pub fn masked_api_key(&self) -> Option<String> {
+        self.config.api_keys().next().map(mask_api_key)
+    }
+
     /// Returns the request headers for the smithy service `api`: the Kiro CLI header set
     /// plus `tokentype: API_KEY` when authenticating with an API key.
     ///
@@ -969,6 +991,33 @@ fn hash_index(session_id: &str, key_count: usize) -> usize {
     (value % key_count as u64) as usize
 }
 
+/// Masks a Kiro API key for logs: the 16 characters after the `ksk_` prefix
+/// (or the first 16 characters when the prefix is absent) become `*`, and the
+/// rest is kept.
+///
+/// # Examples
+///
+/// ```
+/// use lanius_core::auth::mask_api_key;
+///
+/// assert_eq!(mask_api_key("ksk_0123456789abcdefTAIL"), "ksk_****************TAIL");
+/// assert_eq!(mask_api_key("ksk_short"), "ksk_*****");
+/// ```
+pub fn mask_api_key(key: &str) -> String {
+    const PREFIX: &str = "ksk_";
+    const MASKED_CHARS: usize = 16;
+    let (prefix, rest) = match key.strip_prefix(PREFIX) {
+        Some(rest) => (PREFIX, rest),
+        None => ("", key),
+    };
+    let masked: String = rest
+        .chars()
+        .enumerate()
+        .map(|(index, ch)| if index < MASKED_CHARS { '*' } else { ch })
+        .collect();
+    format!("{prefix}{masked}")
+}
+
 /// Returns the configured API key as the bearer token, or an auth error if it vanished.
 fn api_key_token(credentials: &Credentials) -> Result<String> {
     credentials
@@ -1179,6 +1228,35 @@ mod tests {
     use chrono::Duration;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn mask_api_key_hides_sixteen_chars_after_prefix() {
+        assert_eq!(
+            mask_api_key("ksk_0123456789abcdef0123"),
+            "ksk_****************0123"
+        );
+        assert_eq!(mask_api_key("ksk_0123456789abcdef"), "ksk_****************");
+        assert_eq!(mask_api_key("abcdefghijklmnopqr"), "****************qr");
+        assert_eq!(mask_api_key("ksk_"), "ksk_");
+    }
+
+    #[test]
+    fn masked_api_key_matches_the_key_each_pool_manager_sends() {
+        let auth = AuthManager::new(Config {
+            kiro_api_key: Some("ksk_AAAAAAAAAAAAAAAAkey1,ksk_BBBBBBBBBBBBBBBBkey2".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        assert_eq!(
+            auth.masked_api_key().as_deref(),
+            Some("ksk_****************key1")
+        );
+        let second = auth.api_key_manager(1).unwrap().unwrap();
+        assert_eq!(
+            second.masked_api_key().as_deref(),
+            Some("ksk_****************key2")
+        );
+    }
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
