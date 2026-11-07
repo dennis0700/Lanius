@@ -18,8 +18,8 @@ env:
 jobs:
   build-macos-arm64:
     name: Build macOS (Apple Silicon)
-    # macos-14+ GitHub-hosted runners are Apple Silicon (M-series) machines.
-    runs-on: macos-14
+    # macos-15+ GitHub-hosted runners are Apple Silicon (M-series) machines.
+    runs-on: macos-15
 
     steps:
       - name: Checkout
