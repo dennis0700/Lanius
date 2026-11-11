@@ -2,156 +2,126 @@ English | [简体中文](README.zh-CN.md)
 
 # Lanius
 
-An OpenAI- and Anthropic-compatible API gateway for Kiro. Lanius lets tools
-and clients built against the OpenAI Chat Completions API or the Anthropic
-Messages API talk to Kiro without knowing anything about Kiro's own protocol.
+Use Kiro through OpenAI- and Anthropic-compatible APIs. Lanius lets compatible
+clients, SDKs, and coding tools connect to Kiro with a local or self-hosted
+gateway.
 
 ![Lanius desktop app](desktop-ui.png)
 
-## Workspace layout
+## Quick start
 
-This is a Cargo workspace with three crates:
+Choose the desktop app for local use, or the CLI for a server, Docker, and
+automation.
 
-| Crate | Description |
-|---|---|
-| [`crates/lanius-core`](crates/lanius-core) | The gateway itself: HTTP server, request/response conversion, auth, streaming parser, and all business logic. A library crate consumed by both `lanius-cli` and `lanius-gui`. |
-| [`crates/lanius-cli`](crates/lanius-cli) | Headless binary (`lanius`) for running the gateway as a server process, replaying captured streams offline, and probing the live Kiro backend for debugging. |
-| [`crates/lanius-gui`](crates/lanius-gui) | Desktop app (`lanius-desktop`, built with [Slint](https://slint.dev)) that runs the gateway in-process, with a UI for configuration, live logs, model list, and usage. |
+### Desktop app
 
-### Request flow (`lanius-core`)
+Download the package for your platform from the [GitHub Releases](https://github.com/dennis0700/lanius/releases) page, then open Lanius and:
 
-```mermaid
-flowchart LR
-    client["client (OpenAI/Anthropic SDK)"]
-    api["api::openai / api::anthropic<br/>(routes, request/response models, SSE framing)"]
-    convert["convert<br/>(client format -&gt; unified internal representation -&gt; Kiro payload)"]
-    auth["auth<br/>(token acquisition/refresh, credential loading)"]
-    upstream["upstream<br/>(HTTP client with retry, AWS event-stream parsing)"]
-    sse["convert / api::*::sse<br/>(Kiro stream events -&gt; OpenAI/Anthropic wire format)"]
+1. Add your Kiro API key in **Settings**.
+2. Keep the default address, `127.0.0.1:18000`, unless another device needs to connect.
+3. Copy the connection details shown in the app into your client.
 
-    client --> api
-    api --> convert
-    convert --> auth
-    auth --> upstream
-    upstream --> sse
-    sse --> client
-```
+### CLI or Linux server
 
-Supporting modules: `compat` (per-client compatibility hooks, e.g. tool-name
-aliasing and model-id rewriting), `model` (model catalog cache, name
-resolution, and per-model native thinking/reasoning support read from the
-catalog schema), `truncation` (recovery from upstream tool-call/content
-truncation), `tokenizer`
-(token estimation), and `config`/`error` (configuration and unified error
-types).
-
-See each module's `//!` doc comment (e.g. `cargo doc --open -p lanius-core`)
-for details on individual components, or the [`docs/`](docs) directory for
-higher-level, topic-by-topic write-ups (architecture, request flow,
-conversion, auth, streaming, compatibility hooks, model resolution,
-truncation recovery, configuration reference, the desktop GUI, and the test
-suite). Start at [`docs/README.md`](docs/README.md).
-
-## Building
-
-Requires a recent stable Rust toolchain (edition 2024, `rust-version = "1.85"`).
+Download a Linux release, or build the CLI from source. Set a strong client key
+and one Kiro credential source before starting. A Kiro API key is the simplest
+option for servers.
 
 ```sh
-# Build everything
-cargo build --workspace
+export PROXY_API_KEY="$(openssl rand -hex 32)"
+export KIRO_API_KEY="ksk_your_kiro_key"
+export KIRO_REGION="us-east-1"
+export SERVER_HOST="127.0.0.1"
 
-# Build/run just the headless server
-cargo run -p lanius-cli
-
-# Build the desktop app (requires Slint's platform dependencies)
-cargo run -p lanius-gui
+lanius
 ```
 
-## Running the gateway
+When building from this checkout, run `cargo run -p lanius-cli` instead of
+`lanius`. Building requires Rust 1.85 or later. For a persistent Linux service,
+follow the [systemd deployment guide](docs/deployment.md).
 
-The CLI binary is `lanius`:
+### Verify it works
 
 ```sh
-lanius                          # validate config and start serving
-lanius probe [prompt]           # live end-to-end request against the Kiro backend
-lanius probe --capture out.bin  # same, saving the raw upstream stream to a file
-lanius replay out.bin           # offline-decode a previously captured raw stream
-lanius usage                    # show the configured account's credit/quota usage
-                                # (every key, when KIRO_API_KEY lists several)
-lanius usage --json             # same, as raw Kiro JSON
-lanius models                   # list models currently resolvable by this gateway
-lanius models --json            # same, as JSON
-lanius --version                # print the version and exit
-lanius help
+curl http://127.0.0.1:18000/health
+
+curl http://127.0.0.1:18000/v1/models \
+  -H "Authorization: Bearer $PROXY_API_KEY"
 ```
 
-Configuration is read from the environment (a `.env` file is also loaded if
-present). Key variables — see [`docs/configuration.md`](docs/configuration.md)
-or [`crates/lanius-core/src/config.rs`](crates/lanius-core/src/config.rs)
-for the full, authoritative list and defaults:
+## Connect a client
 
-| Variable | Purpose |
+Use `PROXY_API_KEY` as the API key in your client. This is the key protecting
+Lanius, not your Kiro API key.
+
+| Client | Base URL | Messages endpoint |
+|---|---|---|
+| OpenAI-compatible client | `http://127.0.0.1:18000/v1` | `POST /chat/completions` or `POST /responses` |
+| Anthropic-compatible client | `http://127.0.0.1:18000` | `POST http://127.0.0.1:18000/v1/messages` |
+
+For example, an OpenAI-compatible request is:
+
+```sh
+curl http://127.0.0.1:18000/v1/chat/completions \
+  -H "Authorization: Bearer $PROXY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-4.6","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Lanius also supports `GET /v1/models`, `POST /v1/responses`,
+`POST /v1/messages/count_tokens`, `GET /usage`, and `GET /account`. See the
+[API and client guide](docs/request-flow.md) for request formats.
+
+### Codex CLI
+
+Codex uses the OpenAI Responses API. Configure its provider URL as
+`http://127.0.0.1:18000/v1` and use `PROXY_API_KEY` through an environment
+variable. The [Codex guide](docs/zh-CN/codex.md) currently covers this setup in
+Chinese.
+
+## Credentials and configuration
+
+Set `PROXY_API_KEY` and choose one Kiro credential source:
+
+| Setting | Use |
 |---|---|
-| `PROXY_API_KEY` | Bearer key clients must present to Lanius. Required, must not be empty. |
-| `KIRO_REGION` | AWS region used to build Kiro/OIDC endpoint URLs. |
-| `SERVER_HOST` / `SERVER_PORT` | Bind address for the gateway's HTTP server. |
-| `KIRO_API_KEY` | Kiro API key (`ksk_...`) for headless servers/CI; separate multiple keys with commas for hashed session affinity and failover. Must match `KIRO_REGION`. |
-| `REFRESH_TOKEN` / `PROFILE_ARN` | Refresh token and (optional) profile ARN used to authenticate with Kiro. |
-| `KIRO_CREDS_FILE` / `KIRO_CLI_DB_FILE` | Alternative credential sources (JSON file / Kiro CLI's SQLite DB). |
-| `LOG_LEVEL` / `DEBUG_MODE` | Logging verbosity and optional request/response debug capture. |
+| `KIRO_API_KEY` | Recommended for servers and containers. Create a `ksk_...` key at [Kiro](https://app.kiro.dev). |
+| `KIRO_CREDS_FILE` | Use an existing Kiro desktop credentials file. |
+| `KIRO_CLI_DB_FILE` | Use an existing Kiro CLI login database. |
+| `REFRESH_TOKEN` | Use an existing refresh token when the other sources are unavailable. |
 
-The gateway exposes:
+`KIRO_REGION` must match the region for your Kiro key or account. The default
+is `us-east-1`. See the [configuration reference](docs/configuration.md) for
+all settings.
 
-- `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses` — OpenAI-compatible API
-  (Chat Completions and Responses; `/v1/responses` is stateless, so send the
-  full conversation in `input` instead of `previous_response_id`)
-- `POST /v1/messages`, `POST /v1/messages/count_tokens` — Anthropic-compatible API
-- `GET /usage`, `GET /account` — usage/quota for the configured account, gated by `PROXY_API_KEY`
-- `GET /health` — unauthenticated health check
+## Deployment
 
-All routes other than `/health` require the `PROXY_API_KEY` bearer token, and
-CORS is restricted to `localhost`/`127.0.0.1` origins.
+- [Linux with systemd](docs/deployment.md)
+- [Docker and Kubernetes](docs/container.md)
+- [Desktop app guide](docs/gui.md)
 
-### Deploying on Linux (systemd)
+## Security
 
-Prebuilt static Linux binaries (amd64/arm64) are attached to each GitHub
-Release. See [`docs/deployment.md`](docs/deployment.md) for installing
-`lanius` and running it as a hardened systemd service.
-
-### Docker / Kubernetes
-
-`docker build -t lanius .` builds a ~11 MB non-root image from the repo-root
-[`Dockerfile`](Dockerfile). See [`docs/container.md`](docs/container.md) and
-the example manifest in
-[`deploy/kubernetes/lanius.yaml`](deploy/kubernetes/lanius.yaml).
+- Generate a unique, random `PROXY_API_KEY`. Do not use an example value.
+- Keep Kiro credentials and `PROXY_API_KEY` out of Git, screenshots, logs, and
+  issue reports. Use an environment file with restrictive permissions for a
+  server.
+- Bind to `127.0.0.1` when clients run locally or a reverse proxy is in front
+  of Lanius. `0.0.0.0` exposes it on every network interface.
+- Lanius serves HTTP. For traffic outside the host or cluster, use TLS and
+  access controls at a reverse proxy, Ingress, or gateway.
+- `/health` is public for health checks. All other endpoints require
+  `PROXY_API_KEY`.
 
 ## Updating
 
-- **Desktop app**: checks GitHub for a newer release automatically (toggle in
-  Settings), or click "Check Now" there to check on demand. When a newer
-  version is found, click "Update & Restart" to download, verify, and
-  install it. See [`docs/gui.md`](docs/gui.md) for how this works under the
-  hood. The Windows build (`Lanius-<version>-windows-x64.zip`, portable —
-  unzip and run) also notifies you of new releases, but doesn't install in
-  place yet: "Update & Restart" opens the release page for a manual
-  download.
-- **CLI (`lanius`)**: run `lanius update` to check for and install the
-  latest release in place (`lanius update --check` to only check,
-  `lanius update -y` to skip the confirmation prompt). See
-  [`docs/deployment.md`](docs/deployment.md#upgrading) for the systemd
-  upgrade workflow.
-- **Building from source**: `git pull`, then rebuild with
-  `cargo build --workspace` (or `-p lanius-cli` / `-p lanius-gui`).
+The desktop app can check for updates from Settings. For the CLI, run
+`lanius update`; use `lanius update --check` to check without installing.
 
-## Testing
+## More documentation
 
-```sh
-cargo test --workspace
-```
-
-Includes unit tests across `lanius-core` and `lanius-gui`, plus
-`lanius-cli`'s GUI/desktop config-mapping contract tests.
+Advanced setup, compatibility notes, and troubleshooting are in [docs/](docs).
 
 ## License
 
-AGPL-3.0 — see [LICENSE](LICENSE).
+AGPL-3.0. See [LICENSE](LICENSE).
