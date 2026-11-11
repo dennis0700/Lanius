@@ -23,6 +23,7 @@ use serde_json::{Map, Value, json};
 
 use super::super::sse::{OpenAiFormatContext, save_truncations, usage_value};
 use crate::api::search_loop::LoopEvent;
+use crate::convert::ToolNamespaces;
 use crate::error::{GatewayError, Result};
 use crate::tokenizer::count_tokens;
 use crate::truncation::is_content_truncated;
@@ -40,6 +41,8 @@ pub(crate) struct ResponsesContext {
     pub(crate) format: OpenAiFormatContext,
     /// Original names of tools declared as `custom` (freeform).
     pub(crate) custom_tools: HashSet<String>,
+    /// `(namespace, name)` of tools declared inside `namespace` tools, by flattened name.
+    pub(crate) tool_namespaces: ToolNamespaces,
     /// Request parameters echoed on every `response` object.
     pub(crate) echo: Map<String, Value>,
 }
@@ -427,6 +430,10 @@ impl ResponseBuilder {
         let mut item = json!({
             "id": id, "type": kind, "status": "in_progress", "call_id": call_id, "name": name,
         });
+        if let Some((namespace, bare)) = self.context.tool_namespaces.get(&name) {
+            item["name"] = json!(bare);
+            item["namespace"] = json!(namespace);
+        }
         item[field] = json!("");
         self.emit(
             "response.output_item.added",
@@ -592,6 +599,10 @@ mod tests {
         ResponsesContext {
             format,
             custom_tools: HashSet::from(["apply_patch".to_owned()]),
+            tool_namespaces: ToolNamespaces::from([(
+                "collaboration__spawn_agent".to_owned(),
+                ("collaboration".to_owned(), "spawn_agent".to_owned()),
+            )]),
             echo,
         }
     }
@@ -742,6 +753,22 @@ mod tests {
         );
         assert_eq!(response["output"][1]["action"]["query"], "rust");
         assert_eq!(response["output"][2]["status"], "failed");
+    }
+
+    #[tokio::test]
+    async fn namespaced_tool_calls_restore_namespace() {
+        let frames = sse(vec![
+            kiro(tool("call_1", "collaboration__spawn_agent", "{}")),
+            kiro(tool("call_2", "wait", "{}")),
+            kiro(KiroEvent::usage(json!({}))),
+        ])
+        .await;
+        let (_, last) = frames.last().cloned().unwrap_or_default();
+        let output = &last["response"]["output"];
+        assert_eq!(output[0]["name"], "spawn_agent");
+        assert_eq!(output[0]["namespace"], "collaboration");
+        assert_eq!(output[1]["name"], "wait");
+        assert!(output[1].get("namespace").is_none());
     }
 
     #[tokio::test]

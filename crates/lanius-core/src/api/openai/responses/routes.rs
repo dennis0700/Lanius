@@ -29,7 +29,7 @@ use crate::api::search_loop::{
 };
 use crate::auth::AuthManager;
 use crate::compat::ToolNameAliases;
-use crate::convert::{extract_text_content, responses_to_kiro};
+use crate::convert::{extract_text_content, flatten_responses_tools, responses_to_kiro};
 use crate::error::GatewayError;
 use crate::truncation::{
     TruncationStore, generate_truncation_user_message, prepend_tool_recovery_notice,
@@ -62,6 +62,7 @@ pub(crate) async fn create_response(
     }
 
     let original_model = request.model.clone();
+    let tool_namespaces = flatten_responses_tools(&mut request);
     let echo = echo_fields(&request);
     let custom_tools = custom_tool_names(request.tools.as_deref());
     let request_tools = request.tools.as_deref().map(|tools| {
@@ -115,6 +116,7 @@ pub(crate) async fn create_response(
         )
         .with_tool_name_aliases(prepared.tool_name_aliases),
         custom_tools,
+        tool_namespaces,
         echo,
     };
     let search = SearchLoop {
@@ -336,6 +338,7 @@ fn inject_web_search_tool(request: &mut ResponsesRequest, enabled: bool) -> bool
         parameters: web_search_input_schema().as_object().cloned(),
         strict: None,
         format: None,
+        tools: None,
     });
     true
 }

@@ -53,6 +53,7 @@ pub use openai::{
     reasoning_request_from_openai,
 };
 pub use responses::{
-    convert_responses_input_to_unified, convert_responses_tools_to_unified,
-    reasoning_request_from_responses, responses_to_kiro,
+    ToolNamespaces, convert_responses_input_to_unified, convert_responses_tools_to_unified,
+    flatten_responses_tools, namespaced_tool_name, reasoning_request_from_responses,
+    responses_to_kiro,
 };

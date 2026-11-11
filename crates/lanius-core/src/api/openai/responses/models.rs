@@ -93,6 +93,9 @@ pub struct ResponsesTool {
     /// Input format of a `custom` tool (`text` or a `grammar`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<Value>,
+    /// Member tools of a `namespace` tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ResponsesTool>>,
 }
 
 /// The `reasoning` request field.

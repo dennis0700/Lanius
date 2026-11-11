@@ -35,6 +35,104 @@ use crate::model::{ModelInfoCache, ReasoningRequest, get_model_id_for_kiro};
 /// Name of the single string argument a `custom` tool is offered with.
 const CUSTOM_TOOL_INPUT: &str = "input";
 
+/// The namespace whose member tools keep their bare name (and that tool calls without a
+/// `namespace` belong to).
+const DEFAULT_TOOL_NAMESPACE: &str = "functions";
+
+/// Maps a flattened tool name back to its `(namespace, name)` pair.
+pub type ToolNamespaces = HashMap<String, (String, String)>;
+
+/// The flat name a namespaced tool is offered to Kiro under: the bare name for the
+/// default `functions` namespace, otherwise the namespace and name joined with `__`.
+///
+/// # Examples
+///
+/// ```
+/// use lanius_core::convert::namespaced_tool_name;
+///
+/// assert_eq!(namespaced_tool_name(None, "exec"), "exec");
+/// assert_eq!(namespaced_tool_name(Some("functions"), "exec"), "exec");
+/// assert_eq!(namespaced_tool_name(Some("collaboration"), "spawn_agent"), "collaboration__spawn_agent");
+/// assert_eq!(namespaced_tool_name(Some("mcp__github__"), "search"), "mcp__github__search");
+/// ```
+pub fn namespaced_tool_name(namespace: Option<&str>, name: &str) -> String {
+    match namespace
+        .filter(|namespace| !namespace.is_empty() && *namespace != DEFAULT_TOOL_NAMESPACE)
+    {
+        None => name.to_owned(),
+        Some(namespace) if namespace.ends_with('_') => format!("{namespace}{name}"),
+        Some(namespace) => format!("{namespace}__{name}"),
+    }
+}
+
+/// Normalizes a request's tool declarations into a flat `tools` list: tools declared in
+/// `additional_tools` input items (Codex's "Responses Lite" format) are lifted into
+/// `tools` and the items removed, and `namespace` tools are replaced by their members
+/// under [`namespaced_tool_name`]s. Returns the flattened names of namespaced members.
+///
+/// # Examples
+///
+/// ```
+/// use lanius_core::api::ResponsesRequest;
+/// use lanius_core::convert::flatten_responses_tools;
+/// use serde_json::json;
+///
+/// let mut request: ResponsesRequest = serde_json::from_value(json!({
+///     "model": "m",
+///     "input": [
+///         {"type": "additional_tools", "role": "developer", "tools": [
+///             {"type": "namespace", "name": "collaboration", "tools": [
+///                 {"type": "function", "name": "spawn_agent", "parameters": {"type": "object"}}
+///             ]}
+///         ]},
+///         {"role": "user", "content": "hi"}
+///     ]
+/// })).expect("valid request");
+/// let namespaces = flatten_responses_tools(&mut request);
+/// let tools = request.tools.expect("lifted tools");
+/// assert_eq!(tools[0].name.as_deref(), Some("collaboration__spawn_agent"));
+/// assert_eq!(namespaces["collaboration__spawn_agent"].1, "spawn_agent");
+/// assert_eq!(request.input.into_items().len(), 1);
+/// ```
+pub fn flatten_responses_tools(request: &mut ResponsesRequest) -> ToolNamespaces {
+    let mut declared = request.tools.take().unwrap_or_default();
+    if let ResponsesInput::Items(items) = &mut request.input {
+        items.retain(|item| {
+            if str_field(item, "type") != Some("additional_tools") {
+                return true;
+            }
+            let tools = item.get("tools").and_then(Value::as_array);
+            declared.extend(
+                tools
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|tool| serde_json::from_value::<ResponsesTool>(tool.clone()).ok()),
+            );
+            false
+        });
+    }
+    let mut namespaces = ToolNamespaces::new();
+    let mut flat = Vec::with_capacity(declared.len());
+    for tool in declared {
+        if tool.kind != "namespace" {
+            flat.push(tool);
+            continue;
+        }
+        let namespace = tool.name.unwrap_or_default();
+        for mut member in tool.tools.unwrap_or_default() {
+            let Some(name) = member.name.take() else {
+                continue;
+            };
+            let flat_name = namespaced_tool_name(Some(&namespace), &name);
+            namespaces.insert(flat_name.clone(), (namespace.clone(), name));
+            member.name = Some(flat_name);
+            flat.push(member);
+        }
+    }
+    request.tools = (!flat.is_empty()).then_some(flat);
+    namespaces
+}
+
 /// Converts Responses input items into a `(system_prompt, unified_messages)` pair.
 ///
 /// `system`/`developer` messages are pulled out and joined with `\n` into the system
@@ -95,11 +193,15 @@ pub fn convert_responses_input_to_unified(
                 } else {
                     str_field(item, "arguments").unwrap_or("{}").to_owned()
                 };
+                let name = namespaced_tool_name(
+                    str_field(item, "namespace"),
+                    str_field(item, "name").unwrap_or_default(),
+                );
                 let call = json!({
                     "id": str_field(item, "call_id").unwrap_or_default(),
                     "type": "function",
                     "function": {
-                        "name": aliases.alias_for(str_field(item, "name").unwrap_or_default()),
+                        "name": aliases.alias_for(&name),
                         "arguments": arguments,
                     },
                 });
@@ -463,6 +565,48 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, json!("看图"));
         assert_eq!(messages[0].images[0].media_type, "image/png");
+    }
+
+    #[test]
+    fn additional_tools_namespaces_are_flattened_and_round_trip() {
+        let mut request = request(json!({
+            "model": "m",
+            "tools": [],
+            "input": [
+                {"type": "additional_tools", "role": "developer", "tools": [
+                    {"type": "namespace", "name": "functions", "tools": [
+                        {"type": "custom", "name": "exec", "format": {"type": "text"}},
+                        {"type": "function", "name": "wait", "parameters": {"type": "object"}}
+                    ]},
+                    {"type": "namespace", "name": "collaboration", "tools": [
+                        {"type": "function", "name": "spawn_agent", "parameters": {"type": "object"}}
+                    ]}
+                ]},
+                {"role": "user", "content": "go"},
+                {"type": "function_call", "call_id": "c", "namespace": "collaboration", "name": "spawn_agent", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c", "output": "ok"}
+            ]
+        }));
+        let namespaces = flatten_responses_tools(&mut request);
+        assert_eq!(namespaces.len(), 3);
+        let names: Vec<_> = request
+            .tools
+            .iter()
+            .flatten()
+            .filter_map(|tool| tool.name.as_deref())
+            .collect();
+        assert_eq!(names, ["exec", "wait", "collaboration__spawn_agent"]);
+
+        let payload = payload(&request);
+        let state = &payload["conversationState"];
+        assert_eq!(
+            state["history"][1]["assistantResponseMessage"]["toolUses"][0]["name"],
+            "collaboration__spawn_agent"
+        );
+        let tools = state["currentMessage"]["userInputMessage"]["userInputMessageContext"]["tools"]
+            .as_array()
+            .map(Vec::len);
+        assert_eq!(tools, Some(3));
     }
 
     #[test]
