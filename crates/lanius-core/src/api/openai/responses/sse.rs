@@ -23,7 +23,7 @@ use serde_json::{Map, Value, json};
 
 use super::super::sse::{OpenAiFormatContext, save_truncations, usage_value};
 use crate::api::search_loop::LoopEvent;
-use crate::convert::ToolNamespaces;
+use crate::convert::{TOOL_SEARCH_TOOL_NAME, ToolNamespaces};
 use crate::error::{GatewayError, Result};
 use crate::tokenizer::count_tokens;
 use crate::truncation::is_content_truncated;
@@ -43,6 +43,9 @@ pub(crate) struct ResponsesContext {
     pub(crate) custom_tools: HashSet<String>,
     /// `(namespace, name)` of tools declared inside `namespace` tools, by flattened name.
     pub(crate) tool_namespaces: ToolNamespaces,
+    /// Whether a client-executed `tool_search` tool was declared, so calls to
+    /// [`TOOL_SEARCH_TOOL_NAME`] become `tool_search_call` items.
+    pub(crate) tool_search: bool,
     /// Request parameters echoed on every `response` object.
     pub(crate) echo: Map<String, Value>,
 }
@@ -406,6 +409,9 @@ impl ResponseBuilder {
             .filter(|id| !id.is_empty())
             .unwrap_or_else(generate_tool_call_id);
         let output_index = self.output.len();
+        if self.context.tool_search && name == TOOL_SEARCH_TOOL_NAME {
+            return self.push_tool_search_call(call_id, &call.arguments);
+        }
         let custom = self.context.custom_tools.contains(&name);
         let (id, kind, field, value, delta_event, done_event) = if custom {
             let input = custom_tool_input(&call.arguments);
@@ -455,6 +461,30 @@ impl ResponseBuilder {
         self.output.push(item);
     }
 
+    /// Emits a client-executed `tool_search_call` item; its `arguments` are a JSON
+    /// object rather than a JSON string.
+    fn push_tool_search_call(&mut self, call_id: String, arguments: &str) {
+        let output_index = self.output.len();
+        let arguments = serde_json::from_str::<Value>(arguments)
+            .ok()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        let mut item = json!({
+            "id": new_id("tsc"), "type": "tool_search_call", "status": "in_progress",
+            "execution": "client", "call_id": call_id, "arguments": arguments,
+        });
+        self.emit(
+            "response.output_item.added",
+            json!({"output_index": output_index, "item": item}),
+        );
+        item["status"] = json!("completed");
+        self.emit(
+            "response.output_item.done",
+            json!({"output_index": output_index, "item": item}),
+        );
+        self.output.push(item);
+    }
+
     /// Closes all items, emits tool calls and the terminal event, and
     /// returns the final `response` object.
     fn finish(&mut self) -> Value {
@@ -492,7 +522,7 @@ impl ResponseBuilder {
         self.flush_text();
         self.close_open();
         let mut response = self.response("failed");
-        response["error"] = json!({"code": "server_error", "message": error.user_message()});
+        response["error"] = super::routes::openai_error(error);
         self.emit("response.failed", json!({"response": response}));
     }
 
@@ -603,6 +633,7 @@ mod tests {
                 "collaboration__spawn_agent".to_owned(),
                 ("collaboration".to_owned(), "spawn_agent".to_owned()),
             )]),
+            tool_search: true,
             echo,
         }
     }
@@ -769,6 +800,45 @@ mod tests {
         assert_eq!(output[0]["namespace"], "collaboration");
         assert_eq!(output[1]["name"], "wait");
         assert!(output[1].get("namespace").is_none());
+    }
+
+    #[tokio::test]
+    async fn tool_search_calls_become_tool_search_call_items() {
+        let frames = sse(vec![
+            kiro(tool(
+                "call_s",
+                "tool_search",
+                r#"{"query": "echo", "limit": 3}"#,
+            )),
+            kiro(KiroEvent::usage(json!({}))),
+        ])
+        .await;
+        let (_, last) = frames.last().cloned().unwrap_or_default();
+        let item = &last["response"]["output"][0];
+        assert_eq!(item["type"], "tool_search_call");
+        assert_eq!(item["execution"], "client");
+        assert_eq!(item["call_id"], "call_s");
+        assert_eq!(item["status"], "completed");
+        assert_eq!(item["arguments"], json!({"query": "echo", "limit": 3}));
+        let done: Vec<_> = frames
+            .iter()
+            .filter(|(name, _)| name == "response.output_item.done")
+            .collect();
+        assert_eq!(done.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn context_limit_failure_reports_openai_code() {
+        let error = GatewayError::Upstream {
+            status: 400,
+            info: Box::new(crate::error::enhance_kiro_error(
+                &json!({"reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"}),
+            )),
+        };
+        let frames = sse(vec![kiro(KiroEvent::content("x")), Err(error)]).await;
+        let (event, last) = frames.last().cloned().unwrap_or_default();
+        assert_eq!(event, "response.failed");
+        assert_eq!(last["response"]["error"]["code"], "context_length_exceeded");
     }
 
     #[tokio::test]

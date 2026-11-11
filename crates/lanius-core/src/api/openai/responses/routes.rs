@@ -12,18 +12,18 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde_json::{Map, Value, json};
 
 use super::super::routes::{
-    OpenAiState, authorize, event_stream_response, gateway_error_response, validation_error,
-    web_tools_allowed,
+    OpenAiState, authorize, event_stream_response, validation_error, web_tools_allowed,
 };
 use super::super::sse::OpenAiFormatContext;
 use super::models::{ResponsesInput, ResponsesRequest, ResponsesTool};
 use super::sse::{ResponsesContext, collect_response, encode_responses_sse};
+use crate::api::ErrorDetail;
 use crate::api::search_loop::{
     ByteStream, DEFAULT_MAX_SEARCHES, SearchLoop, WEB_SEARCH_TOOL_NAME, open_chat_stream,
 };
@@ -51,7 +51,7 @@ pub(crate) async fn create_response(
         Err(rejection) => return validation_error(&rejection.to_string()),
     };
     if request.previous_response_id.is_some() {
-        return gateway_error_response(GatewayError::InvalidRequest(
+        return responses_error_response(GatewayError::InvalidRequest(
             "previous_response_id is not supported: Lanius does not store responses; \
              send the full conversation in `input`"
                 .to_owned(),
@@ -62,7 +62,7 @@ pub(crate) async fn create_response(
     }
 
     let original_model = request.model.clone();
-    let tool_namespaces = flatten_responses_tools(&mut request);
+    let flattened = flatten_responses_tools(&mut request);
     let echo = echo_fields(&request);
     let custom_tools = custom_tool_names(request.tools.as_deref());
     let request_tools = request.tools.as_deref().map(|tools| {
@@ -82,7 +82,7 @@ pub(crate) async fn create_response(
     {
         Ok(Some((index, auth))) => (Some(index), auth),
         Ok(None) => (None, state.auth_manager.clone()),
-        Err(error) => return gateway_error_response(error),
+        Err(error) => return responses_error_response(error),
     };
     inject_truncation_recovery(&mut items, &state.truncation_store, &conversation_id);
     request.input = ResponsesInput::Items(items);
@@ -102,7 +102,7 @@ pub(crate) async fn create_response(
     .await
     {
         Ok(result) => result,
-        Err(error) => return gateway_error_response(error),
+        Err(error) => return responses_error_response(error),
     };
     let context = ResponsesContext {
         format: OpenAiFormatContext::new(
@@ -116,7 +116,8 @@ pub(crate) async fn create_response(
         )
         .with_tool_name_aliases(prepared.tool_name_aliases),
         custom_tools,
-        tool_namespaces,
+        tool_namespaces: flattened.namespaces,
+        tool_search: flattened.tool_search,
         echo,
     };
     let search = SearchLoop {
@@ -130,7 +131,7 @@ pub(crate) async fn create_response(
     } else {
         match collect_response(events, context).await {
             Ok(response) => Json(response).into_response(),
-            Err(error) => gateway_error_response(error),
+            Err(error) => responses_error_response(error),
         }
     }
 }
@@ -316,6 +317,58 @@ fn inject_truncation_recovery(
     }
 }
 
+/// The OpenAI `error.code` Codex and other Responses clients branch on for this
+/// failure: `context_length_exceeded` triggers compaction, `insufficient_quota` and
+/// `rate_limit_exceeded` stop or back off, anything else is treated as retryable.
+fn openai_error_code(error: &GatewayError) -> &'static str {
+    if error.is_context_limit() {
+        "context_length_exceeded"
+    } else if error.is_quota_exhausted() {
+        "insufficient_quota"
+    } else if matches!(error, GatewayError::Upstream { status: 429, .. }) {
+        "rate_limit_exceeded"
+    } else if matches!(
+        error,
+        GatewayError::InvalidRequest(_) | GatewayError::UnknownModel(_)
+    ) {
+        "invalid_request_error"
+    } else {
+        "server_error"
+    }
+}
+
+/// The OpenAI `error` object for a failed response.
+pub(super) fn openai_error(error: &GatewayError) -> Value {
+    let code = openai_error_code(error);
+    let kind = match code {
+        "server_error" => "server_error",
+        "rate_limit_exceeded" => "rate_limit_error",
+        "insufficient_quota" => "insufficient_quota",
+        _ => "invalid_request_error",
+    };
+    let message = if error.is_context_limit() {
+        "Your input exceeds the context window of this model. \
+         Please adjust your input and try again."
+            .to_owned()
+    } else {
+        error.user_message()
+    };
+    json!({"code": code, "type": kind, "message": message, "param": Value::Null})
+}
+
+/// Builds the error response for `POST /v1/responses` in OpenAI's
+/// `{"error": {...}}` shape, so clients see the codes in [`openai_error`]. A
+/// context-window rejection is always a 400, matching OpenAI.
+fn responses_error_response(error: GatewayError) -> Response {
+    let status = if error.is_context_limit() {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::from_u16(error.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+    };
+    let response = (status, Json(json!({"error": openai_error(&error)}))).into_response();
+    ErrorDetail::attach(response, error.log_detail())
+}
+
 /// Offers the model a Lanius-executed `web_search` function when `enabled`,
 /// unless the client declares its own `web_search` function (whose calls
 /// are then passed through). Returns whether the tool was added.
@@ -339,6 +392,7 @@ fn inject_web_search_tool(request: &mut ResponsesRequest, enabled: bool) -> bool
         strict: None,
         format: None,
         tools: None,
+        execution: None,
     });
     true
 }
@@ -384,6 +438,45 @@ mod tests {
 
     fn request(body: Value) -> ResponsesRequest {
         serde_json::from_value(body).unwrap_or_else(|error| panic!("fixture: {error}"))
+    }
+
+    #[test]
+    fn errors_use_openai_shape_and_codes() {
+        let upstream = |status, reason: &str| GatewayError::Upstream {
+            status,
+            info: Box::new(crate::error::enhance_kiro_error(&json!({"reason": reason}))),
+        };
+        let cases = [
+            (
+                upstream(400, "CONTENT_LENGTH_EXCEEDS_THRESHOLD"),
+                400,
+                "context_length_exceeded",
+            ),
+            (
+                upstream(429, "MONTHLY_REQUEST_COUNT"),
+                429,
+                "insufficient_quota",
+            ),
+            (upstream(429, "THROTTLED"), 429, "rate_limit_exceeded"),
+            (
+                GatewayError::InvalidRequest("bad".into()),
+                400,
+                "invalid_request_error",
+            ),
+            (upstream(500, "UNKNOWN"), 500, "server_error"),
+        ];
+        for (error, status, code) in cases {
+            assert_eq!(openai_error(&error)["code"], code);
+            let response = responses_error_response(error);
+            assert_eq!(response.status().as_u16(), status, "{code}");
+        }
+        let context = openai_error(&upstream(400, "CONTENT_LENGTH_EXCEEDS_THRESHOLD"));
+        assert_eq!(context["type"], "invalid_request_error");
+        assert!(
+            context["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("context window"))
+        );
     }
 
     #[test]

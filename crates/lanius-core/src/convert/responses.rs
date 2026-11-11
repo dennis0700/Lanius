@@ -20,7 +20,7 @@
 //! string; [`crate::api`] maps those calls back to `custom_tool_call` items.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
 
@@ -41,6 +41,26 @@ const DEFAULT_TOOL_NAMESPACE: &str = "functions";
 
 /// Maps a flattened tool name back to its `(namespace, name)` pair.
 pub type ToolNamespaces = HashMap<String, (String, String)>;
+
+/// Name of the function a client-executed `tool_search` tool is offered to Kiro as,
+/// and the name Responses gives to its `tool_search_call` items.
+pub const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
+
+/// Default parameters of a `tool_search` tool that declares none.
+fn tool_search_schema() -> Map<String, Value> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query for deferred tools."},
+            "limit": {"type": "number", "description": "Maximum number of tools to return."},
+        },
+        "required": ["query"],
+    });
+    match schema {
+        Value::Object(schema) => schema,
+        _ => Map::new(),
+    }
+}
 
 /// The flat name a namespaced tool is offered to Kiro under: the bare name for the
 /// default `functions` namespace, otherwise the namespace and name joined with `__`.
@@ -65,10 +85,26 @@ pub fn namespaced_tool_name(namespace: Option<&str>, name: &str) -> String {
     }
 }
 
-/// Normalizes a request's tool declarations into a flat `tools` list: tools declared in
-/// `additional_tools` input items (Codex's "Responses Lite" format) are lifted into
-/// `tools` and the items removed, and `namespace` tools are replaced by their members
-/// under [`namespaced_tool_name`]s. Returns the flattened names of namespaced members.
+/// A request's tool declarations after [`flatten_responses_tools`].
+#[derive(Debug, Default)]
+pub struct FlattenedTools {
+    /// `(namespace, name)` of namespaced tools, by flattened name.
+    pub namespaces: ToolNamespaces,
+    /// Whether a client-executed `tool_search` tool is offered (as the
+    /// [`TOOL_SEARCH_TOOL_NAME`] function), so its calls map back to `tool_search_call`.
+    pub tool_search: bool,
+}
+
+/// Normalizes a request's tool declarations into a flat `tools` list of `function` and
+/// `custom` tools:
+/// - tools declared in `additional_tools` input items (Codex's "Responses Lite" format)
+///   are lifted into `tools` and the items removed;
+/// - tools loaded by earlier `tool_search_output` items are added to `tools` (the items
+///   stay, as the search call's result);
+/// - `namespace` tools are replaced by their members under [`namespaced_tool_name`]s;
+/// - a client-executed `tool_search` tool becomes the [`TOOL_SEARCH_TOOL_NAME`] function.
+///
+/// Later declarations of an already declared name are dropped.
 ///
 /// # Examples
 ///
@@ -88,17 +124,19 @@ pub fn namespaced_tool_name(namespace: Option<&str>, name: &str) -> String {
 ///         {"role": "user", "content": "hi"}
 ///     ]
 /// })).expect("valid request");
-/// let namespaces = flatten_responses_tools(&mut request);
+/// let flattened = flatten_responses_tools(&mut request);
 /// let tools = request.tools.expect("lifted tools");
 /// assert_eq!(tools[0].name.as_deref(), Some("collaboration__spawn_agent"));
-/// assert_eq!(namespaces["collaboration__spawn_agent"].1, "spawn_agent");
+/// assert_eq!(flattened.namespaces["collaboration__spawn_agent"].1, "spawn_agent");
+/// assert!(!flattened.tool_search);
 /// assert_eq!(request.input.into_items().len(), 1);
 /// ```
-pub fn flatten_responses_tools(request: &mut ResponsesRequest) -> ToolNamespaces {
+pub fn flatten_responses_tools(request: &mut ResponsesRequest) -> FlattenedTools {
     let mut declared = request.tools.take().unwrap_or_default();
     if let ResponsesInput::Items(items) = &mut request.input {
         items.retain(|item| {
-            if str_field(item, "type") != Some("additional_tools") {
+            let kind = str_field(item, "type");
+            if !matches!(kind, Some("additional_tools" | "tool_search_output")) {
                 return true;
             }
             let tools = item.get("tools").and_then(Value::as_array);
@@ -108,29 +146,47 @@ pub fn flatten_responses_tools(request: &mut ResponsesRequest) -> ToolNamespaces
                     .flatten()
                     .filter_map(|tool| serde_json::from_value::<ResponsesTool>(tool.clone()).ok()),
             );
-            false
+            kind == Some("tool_search_output")
         });
     }
-    let mut namespaces = ToolNamespaces::new();
+    let mut flattened = FlattenedTools::default();
     let mut flat = Vec::with_capacity(declared.len());
     for tool in declared {
-        if tool.kind != "namespace" {
-            flat.push(tool);
-            continue;
-        }
-        let namespace = tool.name.unwrap_or_default();
-        for mut member in tool.tools.unwrap_or_default() {
-            let Some(name) = member.name.take() else {
-                continue;
-            };
-            let flat_name = namespaced_tool_name(Some(&namespace), &name);
-            namespaces.insert(flat_name.clone(), (namespace.clone(), name));
-            member.name = Some(flat_name);
-            flat.push(member);
+        match tool.kind.as_str() {
+            "namespace" => {
+                let namespace = tool.name.unwrap_or_default();
+                for mut member in tool.tools.unwrap_or_default() {
+                    let Some(name) = member.name.take() else {
+                        continue;
+                    };
+                    let flat_name = namespaced_tool_name(Some(&namespace), &name);
+                    flattened
+                        .namespaces
+                        .insert(flat_name.clone(), (namespace.clone(), name));
+                    member.name = Some(flat_name);
+                    flat.push(member);
+                }
+            }
+            "tool_search" if tool.execution.as_deref().unwrap_or("client") == "client" => {
+                flattened.tool_search = true;
+                flat.push(ResponsesTool {
+                    kind: "function".to_owned(),
+                    name: Some(TOOL_SEARCH_TOOL_NAME.to_owned()),
+                    parameters: tool.parameters.or_else(|| Some(tool_search_schema())),
+                    ..tool
+                });
+            }
+            _ => flat.push(tool),
         }
     }
+    let mut seen = HashSet::new();
+    flat.retain(|tool| {
+        tool.name
+            .as_ref()
+            .is_none_or(|name| seen.insert(name.clone()))
+    });
     request.tools = (!flat.is_empty()).then_some(flat);
-    namespaces
+    flattened
 }
 
 /// Converts Responses input items into a `(system_prompt, unified_messages)` pair.
@@ -185,18 +241,32 @@ pub fn convert_responses_input_to_unified(
                 }
                 messages.push(message);
             }
-            kind @ ("function_call" | "custom_tool_call") => {
+            kind @ ("function_call" | "custom_tool_call" | "tool_search_call") => {
+                if kind == "tool_search_call" && str_field(item, "execution") == Some("server") {
+                    continue;
+                }
                 flush_tool_results(&mut messages, &mut pending_results, &mut pending_images);
-                let arguments = if kind == "custom_tool_call" {
-                    json!({CUSTOM_TOOL_INPUT: str_field(item, "input").unwrap_or_default()})
-                        .to_string()
-                } else {
-                    str_field(item, "arguments").unwrap_or("{}").to_owned()
+                let arguments = match kind {
+                    "custom_tool_call" => {
+                        json!({CUSTOM_TOOL_INPUT: str_field(item, "input").unwrap_or_default()})
+                            .to_string()
+                    }
+                    // `tool_search_call.arguments` is a JSON object, not a JSON string.
+                    "tool_search_call" => match item.get("arguments") {
+                        Some(Value::String(arguments)) => arguments.clone(),
+                        Some(arguments) if !arguments.is_null() => arguments.to_string(),
+                        _ => "{}".to_owned(),
+                    },
+                    _ => str_field(item, "arguments").unwrap_or("{}").to_owned(),
                 };
-                let name = namespaced_tool_name(
-                    str_field(item, "namespace"),
-                    str_field(item, "name").unwrap_or_default(),
-                );
+                let name = if kind == "tool_search_call" {
+                    TOOL_SEARCH_TOOL_NAME.to_owned()
+                } else {
+                    namespaced_tool_name(
+                        str_field(item, "namespace"),
+                        str_field(item, "name").unwrap_or_default(),
+                    )
+                };
                 let call = json!({
                     "id": str_field(item, "call_id").unwrap_or_default(),
                     "type": "function",
@@ -223,6 +293,16 @@ pub fn convert_responses_input_to_unified(
                     "content": nonempty_result(core::extract_text_content(&output)),
                 }));
                 pending_images.extend(core::extract_images_from_content(&output));
+            }
+            "tool_search_output" => {
+                if str_field(item, "execution") == Some("server") {
+                    continue;
+                }
+                pending_results.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": str_field(item, "call_id").unwrap_or_default(),
+                    "content": tool_search_result_text(item, aliases),
+                }));
             }
             "item_reference" => {
                 return Err(GatewayError::InvalidRequest(
@@ -384,6 +464,54 @@ pub fn responses_to_kiro(
         },
         config,
     )
+}
+
+/// The tool result text for a `tool_search_output`: the flattened names (as offered to
+/// Kiro, see [`flatten_responses_tools`]) and descriptions of the tools it loaded.
+fn tool_search_result_text(item: &Value, aliases: &mut ToolNameAliases) -> String {
+    let mut lines = Vec::new();
+    let mut push = |namespace: Option<&str>, tool: &Value| {
+        let Some(name) = str_field(tool, "name") else {
+            return;
+        };
+        let name = aliases.alias_for(&namespaced_tool_name(namespace, name));
+        match str_field(tool, "description")
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            Some(description) => lines.push(format!("- {name}: {description}")),
+            None => lines.push(format!("- {name}")),
+        }
+    };
+    for tool in item
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        match str_field(tool, "type") {
+            Some("namespace") => {
+                let namespace = str_field(tool, "name");
+                for member in tool
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    push(namespace, member);
+                }
+            }
+            _ => push(None, tool),
+        }
+    }
+    if lines.is_empty() {
+        "No matching tools were found.".to_owned()
+    } else {
+        format!(
+            "These tools are now available to call:\n{}",
+            lines.join("\n")
+        )
+    }
 }
 
 /// An item's `type`, defaulting to `message` (the Responses API allows omitting it on
@@ -587,7 +715,7 @@ mod tests {
                 {"type": "function_call_output", "call_id": "c", "output": "ok"}
             ]
         }));
-        let namespaces = flatten_responses_tools(&mut request);
+        let namespaces = flatten_responses_tools(&mut request).namespaces;
         assert_eq!(namespaces.len(), 3);
         let names: Vec<_> = request
             .tools
@@ -607,6 +735,77 @@ mod tests {
             .as_array()
             .map(Vec::len);
         assert_eq!(tools, Some(3));
+    }
+
+    #[test]
+    fn tool_search_is_offered_and_history_round_trips() {
+        let mut request = request(json!({
+            "model": "m",
+            "tools": [
+                {"type": "function", "name": "exec_command", "parameters": {"type": "object"}},
+                {"type": "tool_search", "execution": "client", "description": "Find tools.",
+                 "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}},
+                {"type": "web_search"}
+            ],
+            "input": [
+                {"role": "user", "content": "echo hi"},
+                {"type": "tool_search_call", "call_id": "s1", "execution": "client",
+                 "status": "completed", "arguments": {"query": "echo"}},
+                {"type": "tool_search_output", "call_id": "s1", "execution": "client",
+                 "status": "completed", "tools": [
+                    {"type": "namespace", "name": "mcp__lt__", "description": "", "tools": [
+                        {"type": "function", "name": "echo_text", "description": "Echo text.",
+                         "parameters": {"type": "object"}}
+                    ]}
+                ]},
+                {"type": "function_call", "call_id": "c1", "namespace": "mcp__lt__",
+                 "name": "echo_text", "arguments": "{\"text\":\"hi\"}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "ECHO:hi"}
+            ]
+        }));
+        let flattened = flatten_responses_tools(&mut request);
+        assert!(flattened.tool_search);
+        assert_eq!(flattened.namespaces["mcp__lt__echo_text"].1, "echo_text");
+        let names: Vec<_> = request
+            .tools
+            .iter()
+            .flatten()
+            .filter_map(|tool| tool.name.as_deref())
+            .collect();
+        assert_eq!(names, ["exec_command", "tool_search", "mcp__lt__echo_text"]);
+
+        let payload = payload(&request);
+        let state = &payload["conversationState"];
+        let history = state["history"].as_array().cloned().unwrap_or_default();
+        let search = &history[1]["assistantResponseMessage"]["toolUses"][0];
+        assert_eq!(search["name"], "tool_search");
+        assert_eq!(search["input"], json!({"query": "echo"}));
+        let found =
+            history[2]["userInputMessage"]["userInputMessageContext"]["toolResults"][0]["content"]
+                [0]["text"]
+                .as_str()
+                .unwrap_or_default();
+        assert!(found.contains("mcp__lt__echo_text: Echo text."), "{found}");
+        assert_eq!(
+            history[3]["assistantResponseMessage"]["toolUses"][0]["name"],
+            "mcp__lt__echo_text"
+        );
+    }
+
+    #[test]
+    fn server_tool_search_is_not_offered() {
+        let mut request = request(json!({
+            "model": "m", "input": "hi",
+            "tools": [{"type": "tool_search", "execution": "server"}]
+        }));
+        assert!(!flatten_responses_tools(&mut request).tool_search);
+        assert!(
+            convert_responses_tools_to_unified(
+                request.tools.as_deref(),
+                &mut ToolNameAliases::default()
+            )
+            .is_none()
+        );
     }
 
     #[test]

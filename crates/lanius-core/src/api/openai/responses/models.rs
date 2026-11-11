@@ -96,6 +96,9 @@ pub struct ResponsesTool {
     /// Member tools of a `namespace` tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ResponsesTool>>,
+    /// Who runs a `tool_search` tool: `client` (the caller) or `server`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<String>,
 }
 
 /// The `reasoning` request field.
