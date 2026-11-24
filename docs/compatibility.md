@@ -62,21 +62,69 @@ Restoration happens on the way back out, in three places:
 See [streaming.md](streaming.md#tool-name-restoration) for where this is
 invoked in the response pipeline.
 
-## Kiro hosts
+## Kiro hosts and client identity
 
-Lanius talks to the same two Kiro service hosts as Kiro CLI 2.29.1, both on
-Kiro's [firewall allowlist](https://kiro.dev/docs/privacy-and-security/firewalls/):
+Lanius talks to Kiro the way the default (V3) agent of Kiro CLI 3.5.0 does:
+the same two service hosts, both on Kiro's
+[firewall allowlist](https://kiro.dev/docs/privacy-and-security/firewalls/),
+and the same request shape, captured from live `kiro-cli` 3.5.0 traffic.
 
 - **Runtime host** (`KIRO_API_HOST_TEMPLATE`, `runtime.<region>.kiro.dev`):
-  `GenerateAssistantResponse` and `InvokeMCP`. Requests must carry a
-  profile ARN.
+  `KiroRuntimeService.GenerateAssistantResponse` and
+  `KiroRuntimeService.InvokeMCP`.
 - **Management host** (`KIRO_MANAGEMENT_HOST_TEMPLATE`,
-  `management.<region>.kiro.dev`): `ListAvailableProfiles`,
-  `ListAvailableModels`, `GetUsageLimits` and `GetProfile`.
+  `management.<region>.kiro.dev`): `KiroControlPlaneBearerService`'s
+  `ListAvailableProfiles`, `ListAvailableModels`, `GetUsageLimits` and
+  `GetProfile`. Inputs go in the JSON body only (Kiro CLI 2.x also repeated
+  them in the query string).
+
+Every request identifies as the interactive Kiro CLI's agent harness (KAS
+0.66.119, on the AWS SDK for JavaScript), for example:
+
+```
+User-Agent: aws-sdk-js/1.0.0 ua/2.1 os/linux#<kernel release> lang/js md/nodejs#22.23.4
+  api/kiroruntime#1.0.0 m/N KiroCLI/3.5.0 KAS/0.66.119 os/linux md/appVersion-3.5.0
+  app/AmazonQ-For-CLI acp-client/kiro-cli
+x-amz-user-agent: aws-sdk-js/1.0.0 KiroCLI/3.5.0 KAS/0.66.119 os/linux
+  md/appVersion-3.5.0 app/AmazonQ-For-CLI acp-client/kiro-cli
+```
+
+The `os/` values are Node.js names (`darwin`, `linux`, `win32`). Chat
+requests add `x-amzn-kiro-client-attribution: kiro-cli`,
+`x-amzn-kiro-mode-identifier: default-v2`, `x-amzn-kiro-fallback: 0;max=0`
+and `x-amzn-kiro-attempt: 1;max=3`. `TokenType` is `API_KEY` for API keys
+and `SSO_OIDC` for IAM Identity Center logins; social logins send none.
+Lanius keeps sending `x-amzn-codewhisperer-optout: true`, which the Kiro CLI
+sends when the user has not opted in to content collection.
+
+The chat body follows the Kiro CLI too: `conversationState` carries a fresh
+`agentContinuationId` per request and the conversation as its own
+`rootConversationId`, the request has a top-level `agentMode: "default-v2"`,
+no `envState` is sent, and the system prompt opens the history as a user
+turn answered by `I will follow these instructions.` (Kiro rejects the
+`systemPrompt` field with `REQUEST_BODY_INVALID` unless a server-side flag
+allows it).
 
 Kiro marks the older `q.<region>.amazonaws.com` host as legacy (the Kiro CLI
 now only sends telemetry there), so Lanius no longer uses it. There is no
 client-side endpoint rotation: retries and backoff go to the same host.
+
+## Native reasoning replay
+
+Kiro signs each native reasoning block and checks the signature when the
+block is sent back. Lanius replays an assistant turn's reasoning as
+`reasoningContent` only when Kiro issued it: an Anthropic `thinking` block
+whose signature did not come from Lanius (Lanius's own placeholders start
+with `sig_`), or a `redacted_thinking` block, which Lanius produces from
+Kiro's `redactedContent`. Kiro answers any other signature with
+`THINKING_SIGNATURE_INVALID`, so placeholder-signed blocks are dropped
+instead. Server-side `web_search` rounds replay the round's reasoning the
+same way.
+
+Kiro also reports why the model stopped (`metadataEvent.stopReason`).
+`MAX_TOKENS` marks the response as truncated (`finish_reason: "length"`,
+`stop_reason: "max_tokens"`, Responses `incomplete`); without a stop reason
+Lanius falls back to its stream-completion heuristic.
 
 ## Model ID formatting
 

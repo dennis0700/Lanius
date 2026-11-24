@@ -21,7 +21,7 @@ pub use parser::{
     diagnose_json_truncation, find_matching_brace, parse_bracket_tool_calls,
 };
 pub use stream::{
-    KiroEvent, KiroEventType, StreamResult, collect_stream_to_result,
+    KiroEvent, KiroEventType, STOP_REASON_MAX_TOKENS, StreamResult, collect_stream_to_result,
     collect_stream_to_result_with_config, parse_kiro_stream, parse_kiro_stream_with_config,
 };
 pub use web_search::{

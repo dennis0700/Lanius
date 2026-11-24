@@ -844,7 +844,8 @@ fn save_nonstream_truncations(
             }
         }
     }
-    if crate::truncation::is_content_truncated(
+    if crate::truncation::is_output_truncated(
+        result.stop_reason.as_deref(),
         result.context_usage_percentage.is_some(),
         &result.content,
         !result.tool_calls.is_empty(),

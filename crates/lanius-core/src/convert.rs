@@ -40,12 +40,13 @@ pub use anthropic::{
     convert_anthropic_tools, extract_system_prompt, reasoning_request_from_anthropic,
 };
 pub use core::{
-    KiroPayloadInput, KiroPayloadResult, UnifiedImage, UnifiedMessage, UnifiedTool,
-    build_kiro_history, build_kiro_payload as build_kiro_payload_from_unified,
-    convert_tools_to_kiro_format, ensure_alternating_roles, ensure_first_message_is_user,
-    extract_images_from_content, extract_text_content, merge_adjacent_messages,
-    normalize_message_roles, process_tools_with_long_descriptions, sanitize_json_schema,
-    tool_calls_to_text, tool_results_to_text, validate_tool_names,
+    KiroPayloadInput, KiroPayloadResult, PLACEHOLDER_SIGNATURE_PREFIX, UnifiedImage,
+    UnifiedMessage, UnifiedReasoning, UnifiedTool, build_kiro_history,
+    build_kiro_payload as build_kiro_payload_from_unified, convert_tools_to_kiro_format,
+    ensure_alternating_roles, ensure_first_message_is_user, extract_images_from_content,
+    extract_text_content, is_upstream_signature, merge_adjacent_messages, normalize_message_roles,
+    process_tools_with_long_descriptions, sanitize_json_schema, tool_calls_to_text,
+    tool_results_to_text, validate_tool_names,
 };
 pub use guards::{PayloadTrimStats, check_payload_size, trim_payload_to_limit};
 pub use openai::{

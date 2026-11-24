@@ -19,10 +19,14 @@ Two independent signals, checked at different layers:
   arguments never parse cleanly, the parser explains why (e.g. "missing 2
   closing brace(s)") and replaces `arguments` with `"{}"`, recording the
   diagnosis on `ToolCall::truncation`.
-- **Plain-content truncation** — `truncation::is_content_truncated`, a
-  heuristic checked after the stream completes: true when the stream did
-  *not* finish normally, some content was actually produced, and it wasn't
-  a tool call (tool-call truncation is diagnosed separately, as above).
+- **Plain-content truncation** — checked after the stream completes.
+  Kiro's own `metadataEvent.stopReason` decides when it is reported
+  (`truncation::is_output_truncated`): `MAX_TOKENS` means truncated, any
+  other reason means the model finished. Without a stop reason Lanius falls
+  back to `truncation::is_content_truncated`, a heuristic that is true when
+  the stream did *not* finish normally, some content was actually produced,
+  and it wasn't a tool call (tool-call truncation is diagnosed separately,
+  as above).
 
 Both response builders (`api::openai::sse::response_value_from_result` and
 `api::anthropic::sse::response_from_stream_result`) check these signals

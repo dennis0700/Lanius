@@ -26,7 +26,7 @@ use crate::upstream::{
     KiroEvent, KiroEventType, KiroHttpClient, StreamResult, ToolCall, WebSearchCall,
     WebSearchError, parse_kiro_stream,
 };
-use crate::utils::generate_tool_call_id;
+use crate::utils::{generate_continuation_id, generate_tool_call_id};
 
 /// Name of the model-facing search tool that Lanius executes itself.
 pub(crate) const WEB_SEARCH_TOOL_NAME: &str = "web_search";
@@ -90,6 +90,7 @@ impl SearchLoop {
                 );
                 futures_util::pin_mut!(events);
                 let mut round_text = String::new();
+                let mut round_reasoning = RoundReasoning::default();
                 let mut calls = Vec::new();
                 while let Some(event) = events.next().await {
                     let event = event?;
@@ -101,6 +102,7 @@ impl SearchLoop {
                         KiroEventType::Content => {
                             round_text.push_str(event.content.as_deref().unwrap_or_default());
                         }
+                        KiroEventType::Thinking => round_reasoning.apply(&event),
                         _ => {}
                     }
                     yield LoopEvent::Kiro(event);
@@ -131,10 +133,55 @@ impl SearchLoop {
                     yield LoopEvent::WebSearch(search.call.clone());
                     executed.push(search);
                 }
-                payload = continuation_payload(payload, &round_text, &executed)?;
+                payload = continuation_payload(
+                    payload,
+                    &round_text,
+                    round_reasoning.into_value(),
+                    &executed,
+                )?;
                 source = open_chat_stream(this.auth.clone(), &this.config, &payload).await?;
             }
         }
+    }
+}
+
+/// Native reasoning from one search round, replayed on the round's assistant
+/// turn so the model continues from it, as the Kiro CLI does.
+#[derive(Default)]
+struct RoundReasoning {
+    text: String,
+    signature: Option<String>,
+    redacted: Option<String>,
+}
+
+impl RoundReasoning {
+    fn apply(&mut self, event: &KiroEvent) {
+        if let Some(text) = &event.thinking_content {
+            self.text.push_str(text);
+        }
+        if let Some(signature) = &event.thinking_signature {
+            self.signature = Some(signature.clone());
+        }
+        if let Some(redacted) = &event.redacted_thinking {
+            self.redacted = Some(redacted.clone());
+        }
+    }
+
+    /// The round's `reasoningContent`, if Kiro signed (or redacted) it. Kiro
+    /// sends hidden reasoning as a signature with no text, which goes back
+    /// with its `"..."` placeholder text.
+    fn into_value(self) -> Option<Value> {
+        if let Some(signature) = self.signature.filter(|signature| !signature.is_empty()) {
+            let text = if self.text.is_empty() {
+                "...".to_owned()
+            } else {
+                self.text
+            };
+            return Some(json!({"reasoningText": {"text": text, "signature": signature}}));
+        }
+        self.redacted
+            .filter(|data| !data.is_empty())
+            .map(|data| json!({"redactedContent": data}))
     }
 }
 
@@ -353,13 +400,15 @@ async fn run_search(
 }
 
 /// Extends a Kiro payload with one search round, the way the Kiro CLI does:
-/// the current user turn moves into history (without its tool specs and
-/// environment, which only the current turn carries), followed by the
-/// assistant turn with the round's text and `toolUses`, and a new empty
-/// user turn carrying the `toolResults` becomes the current message.
+/// the current user turn moves into history (without its tool specs, which
+/// only the current turn carries), followed by the assistant turn with the
+/// round's text, `toolUses` and Kiro-signed `reasoningContent`, and a new
+/// empty user turn carrying the `toolResults` becomes the current message.
+/// A fresh `agentContinuationId` marks the new request.
 fn continuation_payload(
     mut payload: Value,
     round_text: &str,
+    reasoning: Option<Value>,
     searches: &[ExecutedSearch],
 ) -> Result<Value> {
     let invalid = || GatewayError::Internal("Kiro payload has no conversationState".into());
@@ -379,33 +428,31 @@ fn continuation_payload(
         _ => Map::new(),
     };
     let tools = context.remove("tools");
-    let env = context.remove("envState");
     if !context.is_empty() {
         current.insert("userInputMessageContext".into(), Value::Object(context));
     }
+    // Keep the Kiro CLI's field order (`content`, context, `origin`, ...).
+    let current = reorder_user_message(current);
 
     let mut next_context = Map::new();
-    if let Some(env) = env {
-        next_context.insert("envState".into(), env);
-    }
-    if let Some(tools) = tools {
-        next_context.insert("tools".into(), tools);
-    }
     next_context.insert(
         "toolResults".into(),
         searches.iter().map(tool_result).collect(),
     );
+    if let Some(tools) = tools {
+        next_context.insert("tools".into(), tools);
+    }
     let mut next = Map::new();
     next.insert("content".into(), Value::String(String::new()));
-    for key in ["modelId", "origin"] {
-        if let Some(value) = current.get(key) {
-            next.insert(key.into(), value.clone());
-        }
-    }
     next.insert(
         "userInputMessageContext".into(),
         Value::Object(next_context),
     );
+    for key in ["origin", "modelId"] {
+        if let Some(value) = current.get(key) {
+            next.insert(key.into(), value.clone());
+        }
+    }
 
     let tool_uses: Vec<Value> = searches
         .iter()
@@ -413,6 +460,12 @@ fn continuation_payload(
             json!({"toolUseId": search.call.tool_use_id, "name": WEB_SEARCH_TOOL_NAME, "input": search.input})
         })
         .collect();
+    let mut assistant = Map::new();
+    assistant.insert("content".into(), Value::String(round_text.to_owned()));
+    assistant.insert("toolUses".into(), Value::Array(tool_uses));
+    if let Some(reasoning) = reasoning {
+        assistant.insert("reasoningContent".into(), reasoning);
+    }
     let Value::Array(history) = state
         .entry("history")
         .or_insert_with(|| Value::Array(Vec::new()))
@@ -422,10 +475,62 @@ fn continuation_payload(
         ));
     };
     history.push(json!({"userInputMessage": current}));
-    history
-        .push(json!({"assistantResponseMessage": {"content": round_text, "toolUses": tool_uses}}));
+    history.push(json!({"assistantResponseMessage": assistant}));
     state.insert("currentMessage".into(), json!({"userInputMessage": next}));
+    state.insert(
+        "agentContinuationId".into(),
+        Value::String(generate_continuation_id()),
+    );
+    let reordered = reorder_state(std::mem::take(state));
+    *state = reordered;
     Ok(payload)
+}
+
+/// Restores the Kiro CLI's `conversationState` field order. (`Map::remove`
+/// swap-removes under `preserve_order`, which moves the last key into the
+/// removed one's place.)
+fn reorder_state(state: Map<String, Value>) -> Map<String, Value> {
+    reorder(
+        state,
+        &[
+            "currentMessage",
+            "chatTriggerType",
+            "conversationId",
+            "history",
+            "agentContinuationId",
+            "agentTaskType",
+            "rootConversationId",
+        ],
+    )
+}
+
+/// Orders a `userInputMessage`'s fields as the Kiro CLI sends them.
+fn reorder_user_message(message: Map<String, Value>) -> Map<String, Value> {
+    reorder(
+        message,
+        &[
+            "content",
+            "userInputMessageContext",
+            "origin",
+            "images",
+            "modelId",
+        ],
+    )
+}
+
+/// Rebuilds `map` with the keys in `order` first, in that order, followed by
+/// any other keys in their existing order.
+fn reorder(map: Map<String, Value>, order: &[&str]) -> Map<String, Value> {
+    let mut entries: Vec<(String, Value)> = map.into_iter().collect();
+    let mut ordered = Map::new();
+    for key in order {
+        if let Some(index) = entries.iter().position(|(name, _)| name == key) {
+            let (name, value) = entries.remove(index);
+            ordered.insert(name, value);
+        }
+    }
+    ordered.extend(entries);
+    ordered
 }
 
 /// Kiro `toolResults` entry for one search: the result document as JSON
@@ -453,19 +558,20 @@ mod tests {
     fn payload() -> Value {
         json!({
             "conversationState": {
-                "conversationId": "c",
-                "history": [{"userInputMessage": {"content": "earlier"}}, {"assistantResponseMessage": {"content": "ok"}}],
                 "currentMessage": {"userInputMessage": {
                     "content": "latest rust release?",
-                    "modelId": "claude-sonnet-4.5",
-                    "origin": "KIRO_CLI",
                     "userInputMessageContext": {
-                        "envState": {"operatingSystem": "macos"},
                         "tools": [{"toolSpecification": {"name": "web_search"}}]
-                    }
-                }}
+                    },
+                    "origin": "KIRO_CLI",
+                    "modelId": "claude-sonnet-4.5"
+                }},
+                "conversationId": "c",
+                "history": [{"userInputMessage": {"content": "earlier"}}, {"assistantResponseMessage": {"content": "ok"}}],
+                "agentContinuationId": "first"
             },
-            "profileArn": "arn"
+            "profileArn": "arn",
+            "agentMode": "default-v2"
         })
     }
 
@@ -486,30 +592,49 @@ mod tests {
             raw: json!({"results": [{"title": "Rust"}]}),
             ..WebSearchResponse::default()
         };
-        let next = continuation_payload(payload(), "Searching.", &[search(Ok(response))])
-            .unwrap_or_else(|error| panic!("continuation must build: {error}"));
+        let reasoning = json!({"reasoningText": {"text": "...", "signature": ".KTR~~sig"}});
+        let next = continuation_payload(
+            payload(),
+            "Searching.",
+            Some(reasoning.clone()),
+            &[search(Ok(response))],
+        )
+        .unwrap_or_else(|error| panic!("continuation must build: {error}"));
         let state = &next["conversationState"];
+        let keys: Vec<&String> = state
+            .as_object()
+            .map(|state| state.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(
+            keys,
+            [
+                "currentMessage",
+                "conversationId",
+                "history",
+                "agentContinuationId"
+            ],
+            "Kiro CLI field order"
+        );
+        assert_ne!(state["agentContinuationId"], "first");
         let history = state["history"]
             .as_array()
             .unwrap_or_else(|| panic!("history must be an array"));
         assert_eq!(history.len(), 4);
+        let moved = &history[2]["userInputMessage"];
+        assert_eq!(moved["content"], "latest rust release?");
+        assert!(moved.get("userInputMessageContext").is_none());
+        let moved_keys: Vec<&String> = moved
+            .as_object()
+            .map(|moved| moved.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(moved_keys, ["content", "origin", "modelId"]);
+        let assistant = &history[3]["assistantResponseMessage"];
+        assert_eq!(assistant["content"], "Searching.");
         assert_eq!(
-            history[2]["userInputMessage"]["content"],
-            "latest rust release?"
-        );
-        assert!(
-            history[2]["userInputMessage"]
-                .get("userInputMessageContext")
-                .is_none()
-        );
-        assert_eq!(
-            history[3]["assistantResponseMessage"]["content"],
-            "Searching."
-        );
-        assert_eq!(
-            history[3]["assistantResponseMessage"]["toolUses"][0],
+            assistant["toolUses"][0],
             json!({"toolUseId": "tooluse_1", "name": "web_search", "input": {"query": "rust"}})
         );
+        assert_eq!(assistant["reasoningContent"], reasoning);
         let current = &state["currentMessage"]["userInputMessage"];
         assert_eq!(current["content"], "");
         assert_eq!(current["modelId"], "claude-sonnet-4.5");
@@ -518,12 +643,47 @@ mod tests {
             context["tools"][0]["toolSpecification"]["name"],
             "web_search"
         );
-        assert_eq!(context["envState"]["operatingSystem"], "macos");
+        assert!(context.get("envState").is_none());
         assert_eq!(
             context["toolResults"][0],
             json!({"toolUseId": "tooluse_1", "content": [{"json": {"results": [{"title": "Rust"}]}}], "status": "success"})
         );
         assert_eq!(next["profileArn"], "arn");
+        assert_eq!(next["agentMode"], "default-v2");
+    }
+
+    #[test]
+    fn round_reasoning_keeps_only_kiro_signed_or_redacted_reasoning() {
+        assert!(RoundReasoning::default().into_value().is_none());
+
+        let mut hidden = RoundReasoning::default();
+        hidden.apply(&KiroEvent::thinking(None, Some(".KTR~~sig".into())));
+        assert_eq!(
+            hidden.into_value(),
+            Some(json!({"reasoningText": {"text": "...", "signature": ".KTR~~sig"}}))
+        );
+
+        let mut summarized = RoundReasoning::default();
+        summarized.apply(&KiroEvent::thinking(Some("Let me ".into()), None));
+        summarized.apply(&KiroEvent::thinking(
+            Some("search.".into()),
+            Some("Ep0C".into()),
+        ));
+        assert_eq!(
+            summarized.into_value(),
+            Some(json!({"reasoningText": {"text": "Let me search.", "signature": "Ep0C"}}))
+        );
+
+        let mut unsigned = RoundReasoning::default();
+        unsigned.apply(&KiroEvent::thinking(Some("no signature".into()), None));
+        assert!(unsigned.into_value().is_none());
+
+        let mut redacted = RoundReasoning::default();
+        redacted.apply(&KiroEvent::redacted_thinking("LktUUn4="));
+        assert_eq!(
+            redacted.into_value(),
+            Some(json!({"redactedContent": "LktUUn4="}))
+        );
     }
 
     #[test]

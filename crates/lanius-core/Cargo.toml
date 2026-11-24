@@ -35,7 +35,6 @@ async-stream = { workspace = true }
 bytes = { workspace = true }
 once_cell = { workspace = true }
 regex = { workspace = true }
-urlencoding = { workspace = true }
 semver = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }

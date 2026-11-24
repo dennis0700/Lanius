@@ -9,7 +9,7 @@ Kiro 施加的输出大小限制可能会在流中途截断响应：tool call �
 有两个相互独立的信号，在不同的层次上检查：
 
 - **Tool call 截断**：在解析时诊断（参见 `upstream::parser::diagnose_json_truncation` 和 [streaming.md](streaming.md)）。如果某个 tool call 累积的 JSON 参数始终无法被干净地解析，解析器会解释原因（例如 "missing 2 closing brace(s)"），并将 `arguments` 替换为 `"{}"`，诊断结果记录在 `ToolCall::truncation` 上。
-- **纯内容截断**：`truncation::is_content_truncated`，一个在流结束后检查的启发式判断。当流*没有*正常结束、确实产生了一些内容、且这些内容不是 tool call 时（tool call 截断如上所述单独诊断），结果为 true。
+- **纯内容截断**：在流结束后检查。由 Kiro 自己的 `metadataEvent.stopReason` 决定（`truncation::is_output_truncated`）：`MAX_TOKENS` 表示被截断，其他原因表示模型正常结束。没有停止原因时，退回到 `truncation::is_content_truncated` 这个启发式判断：当流*没有*正常结束、确实产生了一些内容、且这些内容不是 tool call 时（tool call 截断如上所述单独诊断），结果为 true。
 
 两个响应构建器（`api::openai::sse::response_value_from_result` 和 `api::anthropic::sse::response_from_stream_result`）都会在收集完整响应后立即检查这些信号，并调用 `TruncationStore::save_*` 记录发生的情况，以对话 id 为键。
 

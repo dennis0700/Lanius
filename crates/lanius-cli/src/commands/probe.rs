@@ -61,22 +61,27 @@ pub(crate) async fn run(config: Config, prompt: String, capture: Option<PathBuf>
 
     let client = KiroHttpClient::new(auth.clone(), &config).map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    let conversation_id = uuid_v4();
     let conversation_state = serde_json::json!({
-        "chatTriggerType": "MANUAL",
-        "conversationId": uuid_v4(),
         "currentMessage": {
             "userInputMessage": {
                 "content": prompt,
-                "modelId": "auto",
                 "origin": lanius_core::utils::KIRO_ORIGIN,
+                "modelId": "auto",
             }
         },
+        "chatTriggerType": "MANUAL",
+        "conversationId": conversation_id,
         "history": [],
+        "agentContinuationId": lanius_core::utils::generate_continuation_id(),
+        "agentTaskType": "vibe",
+        "rootConversationId": conversation_id,
     });
     let mut payload = serde_json::json!({ "conversationState": conversation_state });
     if let Some(arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
         payload["profileArn"] = serde_json::Value::String(arn);
     }
+    payload["agentMode"] = serde_json::Value::String(lanius_core::utils::KIRO_AGENT_MODE.into());
 
     let url = config.generate_assistant_response_url();
     println!("POST {url}\n");

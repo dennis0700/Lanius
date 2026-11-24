@@ -16,7 +16,7 @@ use crate::auth::AuthManager;
 use crate::config::Config;
 use crate::error::{GatewayError, Result, enhance_kiro_error};
 use crate::upstream::KiroHttpClient;
-use crate::utils::{API_RUNTIME, KIRO_ORIGIN, with_query};
+use crate::utils::{API_CONTROL_PLANE_BEARER, CONTROL_PLANE_SERVICE, KIRO_ORIGIN};
 
 /// Fetches raw usage-limits data from Kiro's control plane using the
 /// configured account's auth.
@@ -41,29 +41,26 @@ use crate::utils::{API_RUNTIME, KIRO_ORIGIN, with_query};
 /// ```
 pub async fn fetch_usage(auth: &AuthManager, http_client: &KiroHttpClient) -> Result<Value> {
     let token = auth.access_token_and_autofetch().await?;
+    // `isEmailRequired` makes the response include `userInfo.email`, which
+    // the account summary shows. Mirrors the Kiro CLI 3.5.0 otherwise: the
+    // inputs go in the JSON body only, with the profile ARN when one exists.
     let mut payload = json!({"origin":KIRO_ORIGIN,"isEmailRequired":true});
-    // Mirrors the Kiro CLI: the inputs go both in the query string and the
-    // body. The control plane requires the profile ARN for CLI-identified
-    // requests.
-    let profile_arn = auth.profile_arn().await.filter(|arn| !arn.is_empty());
-    let mut query = Vec::with_capacity(2);
-    if let Some(arn) = &profile_arn {
-        query.push(("profileArn", arn.as_str()));
-        payload["profileArn"] = Value::String(arn.clone());
+    if let Some(arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
+        payload["profileArn"] = Value::String(arn);
     }
-    query.push(("origin", KIRO_ORIGIN));
     let body = serde_json::to_vec(&payload)?;
     let mut headers = reqwest::header::HeaderMap::new();
-    for (name, value) in auth.headers_for(&token, API_RUNTIME) {
+    for (name, value) in auth.headers_for(&token, API_CONTROL_PLANE_BEARER) {
         if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
             headers.insert(name, value);
         }
     }
-    headers.insert(
-        "x-amz-target",
-        reqwest::header::HeaderValue::from_static("AmazonCodeWhispererService.GetUsageLimits"),
-    );
-    let url = with_query(&format!("{}/", auth.control_plane_host().await), &query);
+    if let Ok(target) =
+        reqwest::header::HeaderValue::from_str(&format!("{CONTROL_PLANE_SERVICE}.GetUsageLimits"))
+    {
+        headers.insert("x-amz-target", target);
+    }
+    let url = format!("{}/", auth.control_plane_host().await);
     let mut request = http_client.client().post(url).body(body);
     for (name, value) in &headers {
         request = request.header(name, value);

@@ -8,7 +8,7 @@ Kiro 以一系列小型 JSON 对象的形式流式返回响应，这些对象首
 flowchart TD
     raw["上游原始字节"]
     feed["AwsEventStreamParser::feed (upstream::parser)<br/>跨 chunk 边界缓冲不完整的 UTF-8 和不完整的 JSON<br/>扫描最早出现的匹配键前缀模式"]
-    events["ParserEvent::{Content, Reasoning, Usage, ContextUsage}<br/>(+ 内部累积的跨多个 chunk 的 ToolCall 状态)"]
+    events["ParserEvent::{Content, Reasoning, RedactedReasoning, StopReason, Usage, ContextUsage}<br/>(+ 内部累积的跨多个 chunk 的 ToolCall 状态)"]
     parse_stream["parse_kiro_stream (upstream::stream)<br/>将 ParserEvent 转换为与提供方无关的 KiroEvent"]
     openai_sse["api::openai::sse::encode_openai_sse<br/>chat.completion.chunk 帧"]
     anthropic_sse["api::anthropic::sse::AnthropicSseFormatter<br/>message_start / content_block_* / message_delta /<br/>message_stop / ping 帧"]
@@ -26,7 +26,7 @@ flowchart TD
 
 - **UTF-8 安全**：`decode_into_buffer` 会在多次调用之间保留末尾不完整的多字节序列，而不是过早解码。真正无效（而不仅仅是不完整）的序列会被丢弃，这样一段损坏的字节就不会让解析器永远卡住。
 - **JSON 对象边界检测**：`find_matching_brace` 跟踪花括号深度，同时正确跳过出现在字符串字面量内部的 `{`/`}`（并识别 `\"` 转义的引号）。它按字节操作，但只特殊处理 ASCII 的 `{`、`}`、`"`、`\`，因此绝不会切断多字节 UTF-8 字符。
-- **模式匹配**：`EVENT_PATTERNS` 列出了 Kiro 发出的字面 JSON 片段前缀（`{"content":`；reasoning 对应 `{"text":`/`{"signature":`；tool call 生命周期对应 `{"name":`/`{"input":`/`{"stop":`；以及 `{"usage":`、`{"contextUsagePercentage":`）。解析器会扫描缓冲区中最早出现的那个，以决定接下来解析什么。
+- **模式匹配**：`EVENT_PATTERNS` 列出了 Kiro 发出的字面 JSON 片段前缀（`{"content":`；reasoning 对应 `{"text":`/`{"signature":`，完全隐藏的 reasoning 对应 `{"redactedContent":`；tool call 生命周期对应 `{"name":`/`{"input":`/`{"stop":`；以及 `{"usage":`、`{"contextUsagePercentage":` 和来自 `metadataEvent` 的 `{"stopReason":`）。解析器会扫描缓冲区中最早出现的那个，以决定接下来解析什么。
 - **Tool call 累积**：tool call 生命周期片段（`ToolStart`/`ToolInput`/`ToolStop`）不会直接映射为 `ParserEvent`；它们会跨越可能很多个 chunk 更新内部的 `PartialToolCall`，只有在 `ToolStop` 片段将其关闭后，才会完成并通过 `take_tool_calls` 暴露出来。
 - **方括号形式的 tool call**：一些模型会在文本内容中内联输出一种较旧的非 JSON 约定（`[Called <name> with args: {...}]`），由 `parse_bracket_tool_calls` 单独识别。它作用于完整收集后的文本内容，而不是增量处理。
 - **去重**：`deduplicate_tool_calls` 会合并同一逻辑调用的重复/不完整条目：共享非空 id 的条目会被合并（优先选择更完整、非 `"{}"`、更长的参数字符串），有 id 的条目排在无 id 的条目之前，最后剩余的 `name`+`arguments` 完全相同的条目会折叠为一条。
@@ -39,9 +39,9 @@ flowchart TD
 - **首 token 超时**（`config.first_token_timeout`）：如果在此时间内没有任何字节到达，流会以 `GatewayError::FirstTokenTimeout` 结束。
 - **流式读取超时**（`config.streaming_read_timeout`）：在首个 token 之后生效，用于捕获流中途的停滞（`GatewayError::StreamReadTimeout`）。
 
-它输出 `KiroEvent`：一个带有 `KiroEventType` 判别字段（`Content`、`Thinking`、`ToolUse`、`Usage`、`ContextUsage`、`Error`）的结构体，并填充该变体对应的相关字段。它只能通过关联的辅助函数（`KiroEvent::content`、`KiroEvent::thinking` 等）构造，因此调用方永远不会手工拼出不一致的组合。
+它输出 `KiroEvent`：一个带有 `KiroEventType` 判别字段（`Content`、`Thinking`、`ToolUse`、`Usage`、`ContextUsage`、`StopReason`、`Error`）的结构体，并填充该变体对应的相关字段。它只能通过关联的辅助函数（`KiroEvent::content`、`KiroEvent::thinking` 等）构造，因此调用方永远不会手工拼出不一致的组合。完全隐藏的 reasoning 以设置了 `redacted_thinking` 的 `Thinking` 事件到达（`KiroEvent::redacted_thinking`）；Kiro 的停止原因（`END_TURN`、`TOOL_USE`、`MAX_TOKENS` 等）以 `StopReason` 事件到达。
 
-`collect_stream_to_result` 会把整个流消费为一个 `StreamResult`（累积的 content/thinking 文本、去重后的 tool call、最后一次看到的 usage/context-usage），供非流式响应路径使用；`parse_kiro_stream` 本身则由流式响应路径以及 `lanius-cli` 的 `probe`/`replay` 子命令直接使用。
+`collect_stream_to_result` 会把整个流消费为一个 `StreamResult`（累积的 content/thinking 文本、thinking 签名或隐藏的 reasoning、去重后的 tool call、停止原因、最后一次看到的 usage/context-usage），供非流式响应路径使用；`parse_kiro_stream` 本身则由流式响应路径以及 `lanius-cli` 的 `probe`/`replay` 子命令直接使用。
 
 ## 重新编码：OpenAI（`api::openai::sse`）
 
@@ -64,6 +64,11 @@ sequenceDiagram
         K->>F: thinking 事件
         F->>C: content_block_start (index 0)
         F->>C: content_block_delta*
+        F->>C: content_block_stop
+    end
+    opt 存在隐藏的 reasoning
+        K->>F: redacted thinking 事件
+        F->>C: content_block_start (redacted_thinking，完整 data)
         F->>C: content_block_stop
     end
     K->>F: text 事件

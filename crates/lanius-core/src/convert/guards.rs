@@ -12,10 +12,10 @@
 //!   by their `\uXXXX`-escaped length rather than their raw UTF-8 byte length.
 //! - [`trim_payload_to_limit`] — the trimming algorithm itself: strips harmless empty
 //!   `toolUses` arrays, then repeatedly drops the *oldest two* history entries (a
-//!   user/assistant pair) until the payload fits or no more can safely be dropped, then
-//!   repairs any tool results left dangling by the trim (see
-//!   `repair_orphaned_tool_results`) and drops any leading entries that no longer start
-//!   with a `userInputMessage` (Kiro requires history to start on a user turn).
+//!   user/assistant pair) after the system prompt pair until the payload fits or no more
+//!   can safely be dropped, then repairs any tool results left dangling by the trim (see
+//!   `repair_orphaned_tool_results`) and drops any entries left without a leading
+//!   `userInputMessage` (Kiro requires history to alternate starting on a user turn).
 
 use serde_json::{Map, Value};
 
@@ -62,15 +62,17 @@ pub fn check_payload_size(payload: &Value) -> usize {
 ///    stats reporting zero entries and no change.
 /// 2. Strip any assistant turn's `toolUses` field when it is present but empty — a
 ///    harmless simplification that also slightly reduces size before the main loop.
-/// 3. Repeatedly drop the *oldest two* history entries (`history.drain(..2)`) — two at a
-///    time, not one, because Kiro's history alternates user/assistant turns and dropping
-///    only one would misalign that pairing — as long as more than 2 entries remain *and*
-///    the payload is still over `max_bytes`. This preserves at least the most recent
-///    exchange rather than trimming down to nothing.
-/// 4. After trimming, drop any remaining leading entries that are not `userInputMessage`
-///    turns (Kiro requires history to begin on a user turn — dropping in pairs alone does
-///    not always land on a user-first boundary, e.g. if the original history had an
-///    irregular shape).
+/// 3. Repeatedly drop the *oldest two* history entries after the system prompt pair (if
+///    the history opens with one, see [`super::core::build_kiro_payload`]; the pair holds
+///    the conversation's instructions and is never trimmed) — two at a time, not one,
+///    because Kiro's history alternates user/assistant turns and dropping only one would
+///    misalign that pairing — as long as more than 2 such entries remain *and* the
+///    payload is still over `max_bytes`. This preserves at least the most recent exchange
+///    rather than trimming down to nothing.
+/// 4. After trimming, drop any entries right after the kept prefix that are not
+///    `userInputMessage` turns (Kiro requires history to alternate starting on a user turn
+///    — dropping in pairs alone does not always land on a user-first boundary, e.g. if the
+///    original history had an irregular shape).
 /// 5. Repair any `toolResults` entries left referencing a `toolUseId` that no longer has a
 ///    matching `toolUses` entry in the now-preceding turn (see
 ///    `repair_orphaned_tool_results`) — trimming can and does create these, since a tool
@@ -105,26 +107,30 @@ pub fn trim_payload_to_limit(payload: &mut Value, max_bytes: usize) -> PayloadTr
             };
         }
     };
+    // The system prompt pair at the head of the history (see
+    // `super::core::build_kiro_payload`) is the conversation's instructions,
+    // not an old turn, so it is never trimmed.
+    let kept = history_mut(payload).map_or(0, |history| system_prompt_entries(history));
     if let Some(history) = history_mut(payload) {
         strip_empty_tool_uses(history);
     }
     loop {
-        let can_trim = history_mut(payload).is_some_and(|history| history.len() > 2);
+        let can_trim = history_mut(payload).is_some_and(|history| history.len() > kept + 2);
         if !can_trim || check_payload_size(payload) <= max_bytes {
             break;
         }
         // Drop the oldest user/assistant pair together to keep alternation intact.
         if let Some(history) = history_mut(payload) {
-            history.drain(..2);
+            history.drain(kept..kept + 2);
         }
     }
     if let Some(history) = history_mut(payload) {
         while history
-            .first()
+            .get(kept)
             .and_then(Value::as_object)
             .is_some_and(|entry| !entry.contains_key("userInputMessage"))
         {
-            history.remove(0);
+            history.remove(kept);
         }
         repair_orphaned_tool_results(history);
     }
@@ -136,6 +142,20 @@ pub fn trim_payload_to_limit(payload: &mut Value, max_bytes: usize) -> PayloadTr
         final_entries,
         trimmed: original_entries != final_entries,
     }
+}
+
+/// `2` when `history` opens with the system prompt pair (a user turn answered by
+/// [`super::core::SYSTEM_PROMPT_ACK`]), otherwise `0`.
+fn system_prompt_entries(history: &[Value]) -> usize {
+    let opens_with_system_prompt = history
+        .get(1)
+        .and_then(|entry| entry.pointer("/assistantResponseMessage/content"))
+        .and_then(Value::as_str)
+        == Some(super::core::SYSTEM_PROMPT_ACK)
+        && history
+            .first()
+            .is_some_and(|entry| entry.get("userInputMessage").is_some());
+    if opens_with_system_prompt { 2 } else { 0 }
 }
 
 fn history_mut(payload: &mut Value) -> Option<&mut Vec<Value>> {
@@ -367,6 +387,27 @@ mod tests {
             check_payload_size(&payload),
             compact_ascii_json(&payload).len()
         );
+    }
+
+    #[test]
+    fn trimming_keeps_the_system_prompt_pair() {
+        let ack = super::super::core::SYSTEM_PROMPT_ACK;
+        let mut payload = json!({"conversationState":{"history":[
+            {"userInputMessage":{"content":"system rules"}},
+            {"assistantResponseMessage":{"content":ack}},
+            {"userInputMessage":{"content":"old question ".repeat(50)}},
+            {"assistantResponseMessage":{"content":"old answer ".repeat(50)}},
+            {"userInputMessage":{"content":"recent"}},
+            {"assistantResponseMessage":{"content":"reply"}}
+        ]}});
+        let max_bytes = check_payload_size(&payload) - 100;
+        let stats = trim_payload_to_limit(&mut payload, max_bytes);
+        assert!(stats.trimmed);
+        let history = payload["conversationState"]["history"].as_array().unwrap();
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0]["userInputMessage"]["content"], "system rules");
+        assert_eq!(history[1]["assistantResponseMessage"]["content"], ack);
+        assert_eq!(history[2]["userInputMessage"]["content"], "recent");
     }
 
     #[test]

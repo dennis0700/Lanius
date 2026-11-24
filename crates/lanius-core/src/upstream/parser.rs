@@ -274,6 +274,12 @@ pub enum ParserEvent {
         /// Opaque signature Kiro sends once the thinking block is complete.
         signature: Option<String>,
     },
+    /// Fully redacted reasoning (`reasoningContentEvent.redactedContent`,
+    /// base64), which must be sent back unchanged to continue from it.
+    RedactedReasoning(String),
+    /// Why the model stopped (`metadataEvent.stopReason`: `END_TURN`,
+    /// `TOOL_USE`, `MAX_TOKENS`, ...).
+    StopReason(String),
     /// Usage/billing information reported by Kiro.
     Usage(Value),
     /// Percentage of the model's context window consumed so far.
@@ -289,9 +295,11 @@ pub enum ParserEvent {
 const EVENT_PATTERNS: &[(&str, PatternKind)] = &[
     ("{\"content\":", PatternKind::Content),
     // `reasoningContentEvent` payloads: `{"text":...}` chunks, then a final
-    // `{"signature":...}` (some models send both keys in one event).
+    // `{"signature":...}` (some models send both keys in one event), or a
+    // single `{"redactedContent":...}`.
     ("{\"text\":", PatternKind::Reasoning),
     ("{\"signature\":", PatternKind::Reasoning),
+    ("{\"redactedContent\":", PatternKind::RedactedReasoning),
     ("{\"name\":", PatternKind::ToolStart),
     ("{\"input\":", PatternKind::ToolInput),
     ("{\"stop\":", PatternKind::ToolStop),
@@ -300,12 +308,15 @@ const EVENT_PATTERNS: &[(&str, PatternKind)] = &[
     // `meteringEvent` payloads: `{"unit":"credit","unitPlural":"credits","usage":0.03}`.
     ("{\"unit\":", PatternKind::Metering),
     ("{\"contextUsagePercentage\":", PatternKind::ContextUsage),
+    // `metadataEvent` payloads: `{"stopReason":"END_TURN"}`.
+    ("{\"stopReason\":", PatternKind::StopReason),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PatternKind {
     Content,
     Reasoning,
+    RedactedReasoning,
     ToolStart,
     ToolInput,
     ToolStop,
@@ -313,6 +324,7 @@ enum PatternKind {
     Usage,
     Metering,
     ContextUsage,
+    StopReason,
 }
 
 /// Incremental decoder for Kiro's response stream. Create one instance per
@@ -491,6 +503,16 @@ impl AwsEventStreamParser {
                     .cloned()
                     .unwrap_or(Value::from(0)),
             )),
+            PatternKind::RedactedReasoning => data
+                .get("redactedContent")
+                .and_then(Value::as_str)
+                .filter(|data| !data.is_empty())
+                .map(|data| ParserEvent::RedactedReasoning(data.to_owned())),
+            PatternKind::StopReason => data
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.is_empty())
+                .map(|reason| ParserEvent::StopReason(reason.to_owned())),
             PatternKind::Followup => None,
         }
     }
@@ -1009,6 +1031,22 @@ mod tests {
             got.extend(drip.feed(&[*b]));
         }
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn parses_redacted_reasoning_and_stop_reason() {
+        let mut p = AwsEventStreamParser::new();
+        let events = p.feed(
+            br#"{"content":"pong"}{"redactedContent":"LktUUn4="}{"stopReason":"END_TURN"}{"redactedContent":""}"#,
+        );
+        assert_eq!(
+            events,
+            vec![
+                ParserEvent::Content(json!("pong")),
+                ParserEvent::RedactedReasoning("LktUUn4=".into()),
+                ParserEvent::StopReason("END_TURN".into()),
+            ]
+        );
     }
 
     #[test]

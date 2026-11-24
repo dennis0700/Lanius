@@ -35,7 +35,9 @@
 //! accurately reports which compatibility behaviors are active.
 
 use crate::error::Result;
-use crate::utils::{API_RUNTIME, kiro_amz_user_agent, kiro_user_agent};
+use crate::utils::{
+    API_CONTROL_PLANE_BEARER, CONTROL_PLANE_SERVICE, kiro_amz_user_agent, kiro_user_agent,
+};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -794,7 +796,8 @@ impl ProfileArnAutofetchHook {
         )
     }
     /// Builds the header set for a `ListAvailableProfiles` request: bearer auth using
-    /// `token`, the AWS SDK-style target, and the Kiro CLI runtime-API user-agents.
+    /// `token`, the control-plane target, the Kiro CLI control-plane user-agents, and
+    /// `token_type` as the `TokenType` header when the auth flow has one.
     ///
     /// Callers must treat `token` as sensitive: it is embedded verbatim in the
     /// `Authorization` header value returned here.
@@ -805,12 +808,13 @@ impl ProfileArnAutofetchHook {
     /// use lanius_core::compat::ProfileArnAutofetchHook;
     /// use axum::http::header;
     ///
-    /// let headers = ProfileArnAutofetchHook::profile_headers("tok");
+    /// let headers = ProfileArnAutofetchHook::profile_headers("tok", Some("SSO_OIDC"));
     /// assert_eq!(headers[header::AUTHORIZATION], "Bearer tok");
+    /// assert_eq!(headers["TokenType"], "SSO_OIDC");
     /// ```
-    pub fn profile_headers(token: &str) -> HeaderMap {
+    pub fn profile_headers(token: &str, token_type: Option<&str>) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        let entries = [
+        let mut entries = vec![
             (header::AUTHORIZATION, format!("Bearer {token}")),
             (
                 header::CONTENT_TYPE,
@@ -818,18 +822,24 @@ impl ProfileArnAutofetchHook {
             ),
             (
                 HeaderName::from_static("x-amz-target"),
-                "AmazonCodeWhispererService.ListAvailableProfiles".to_string(),
+                format!("{CONTROL_PLANE_SERVICE}.ListAvailableProfiles"),
             ),
-            (header::USER_AGENT, kiro_user_agent(API_RUNTIME)),
+            (
+                header::USER_AGENT,
+                kiro_user_agent(API_CONTROL_PLANE_BEARER),
+            ),
             (
                 HeaderName::from_static("x-amz-user-agent"),
-                kiro_amz_user_agent(API_RUNTIME),
+                kiro_amz_user_agent(),
             ),
             (
                 HeaderName::from_static("x-amzn-codewhisperer-optout"),
                 "true".to_string(),
             ),
         ];
+        if let Some(token_type) = token_type {
+            entries.push((HeaderName::from_static("tokentype"), token_type.to_owned()));
+        }
         for (name, value) in entries {
             if let Ok(value) = HeaderValue::from_str(&value) {
                 headers.insert(name, value);
@@ -1021,11 +1031,12 @@ mod tests {
             ProfileArnAutofetchHook::profile_url("eu-central-1"),
             "https://management.eu-central-1.kiro.dev/"
         );
-        let headers = ProfileArnAutofetchHook::profile_headers("secret");
+        let headers = ProfileArnAutofetchHook::profile_headers("secret", None);
         assert_eq!(
             headers["x-amz-target"],
-            "AmazonCodeWhispererService.ListAvailableProfiles"
+            "KiroControlPlaneBearerService.ListAvailableProfiles"
         );
+        assert!(headers.get("tokentype").is_none());
         assert_eq!(
             ProfileArnAutofetchHook::profile_from_response(
                 &json!({"profiles":[{"profileArn":"arn"}]})

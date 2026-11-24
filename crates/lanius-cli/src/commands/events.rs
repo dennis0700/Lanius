@@ -64,6 +64,9 @@ pub(crate) async fn print_events(
                 if let Some(signature) = event.thinking_signature {
                     println!("[thinking sig]  {} chars", signature.chars().count());
                 }
+                if let Some(redacted) = event.redacted_thinking {
+                    println!("[redacted]      {} chars", redacted.chars().count());
+                }
             }
             KiroEventType::ToolUse => {
                 summary.tool_calls += 1;
@@ -87,6 +90,9 @@ pub(crate) async fn print_events(
             KiroEventType::ContextUsage => {
                 summary.context_usage_events += 1;
                 println!("[context_usage] {:?}", event.context_usage_percentage);
+            }
+            KiroEventType::StopReason => {
+                println!("[stop_reason]   {:?}", event.content);
             }
             KiroEventType::Error => {
                 println!("[error]         {:?}", event.content);

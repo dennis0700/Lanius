@@ -64,7 +64,7 @@ pub struct UnifiedTool {
 2. **System prompt 组装**：调用方提供的 prompt + 迁移过来的工具文档 +（若启用 `config.truncation_recovery`）截断恢复的说明性附加内容。
 3. **工具上下文预处理**（`preprocess_tool_context`）：当前轮次未声明任何工具时，或者某个 tool result 前面没有可以对应的 assistant tool call 时，将 tool call/result 展平为叙述性文本（Kiro 要求严格的 call/result 配对，而客户端并不总能保证这一点，例如在客户端进行上下文压缩之后）。
 4. **角色规范化**：合并相邻的同角色轮次（`merge_adjacent_messages`），然后应用 `ensure_alternating_roles(normalize_message_roles(ensure_first_message_is_user(...)))`，使序列满足 Kiro 严格的 user/assistant 交替要求，并以 user 轮次开头。
-5. **历史/当前拆分**：将规范化后的序列拆分为 `history`（除最后一条消息外的全部内容）以及 Kiro 期望作为当前轮次的 `currentMessage`。
+5. **历史/当前拆分**：将规范化后的序列拆分为 `history`（除最后一条消息外的全部内容）以及 Kiro 期望作为当前轮次的 `currentMessage`。与 Kiro CLI 一样，非空的 system prompt 作为单独的 user 轮放在 history 开头，后面接内容为 `I will follow these instructions.` 的 assistant 轮；assistant 轮上由 Kiro 签名的 reasoning 会作为 `reasoningContent` 回传（见 [compatibility.md](compatibility.md#原生-reasoning-回传)）。
 6. **原生 reasoning 字段**：如果解析出的模型支持原生 thinking/reasoning（见 [model-catalog.md](model-catalog.md)），则通过 `ReasoningCapability::request_fields` 将请求的 reasoning 设置渲染为 Kiro 的 `additionalModelRequestFields` 结构，并放在请求的顶层发送（Kiro 会忽略放在其他位置的该字段）。
 7. **大小限制**（`convert::guards`）：按照 Kiro 的计数方式测量组装后 payload 的大小（紧凑的 ASCII 转义 JSON，因此多字节字符按其 `\uXXXX` 转义后的长度计算，而不是原始 UTF-8 字节数，见 `check_payload_size`）。如果超过 `kiro_max_payload_bytes` 且启用了 `auto_trim_payload`，`trim_payload_to_limit` 会反复从历史中删除*最旧的一对 user/assistant*（从不删除单条记录，以保持交替结构完整），直到大小符合要求；然后修复因裁剪而悬空的 `toolResults` 条目（`repair_orphaned_tool_results`），并删除成对裁剪未能干净处理掉的、开头的非 user 条目。
 

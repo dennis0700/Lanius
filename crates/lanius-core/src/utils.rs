@@ -1,8 +1,8 @@
 //! Fingerprinting, user-agent, id generation, and spaced-JSON helpers.
 //!
 //! Kiro's backend expects requests shaped exactly like an official client's.
-//! Lanius identifies as the Kiro CLI ([`kiro_headers`], [`kiro_user_agent`]),
-//! keeps a stable per-machine fingerprint ([`machine_fingerprint`]) for
+//! Lanius identifies as the Kiro CLI 3.5.0 default (V3) agent
+//! ([`kiro_headers`], [`kiro_user_agent`]), keeps a stable per-machine fingerprint ([`machine_fingerprint`]) for
 //! diagnostics, and serializes JSON payloads serialized with `", "`/`": "` separators rather than
 //! `serde_json`'s compact default — see [`format_json_spaced`]/
 //! [`format_json_spaced_sorted`], used by `upstream::parser` and
@@ -71,81 +71,169 @@ pub fn hash_affinity_key(value: &str) -> String {
     hex_sha256(value.as_bytes())[..32].to_string()
 }
 
-// Client identity mirrored from the official Kiro CLI (captured from
-// kiro-cli 2.29.1 request logs). Bump these together when Kiro raises its
-// minimum supported client version.
-const KIRO_CLI_VERSION: &str = "2.29.1";
-const AWS_SDK_RUST_VERSION: &str = "1.3.15";
-const RUST_VERSION: &str = "1.92.0";
+// Client identity mirrored from the official Kiro CLI 3.5.0, whose default V3
+// agent harness (KAS, `@kiro/agent` 0.66.119) talks to Kiro through the AWS
+// SDK for JavaScript on Node.js 22.23.4 (captured from live requests). Bump
+// these together when Kiro raises its minimum supported client version.
+const KIRO_CLI_VERSION: &str = "3.5.0";
+const KAS_VERSION: &str = "0.66.119";
+const NODE_VERSION: &str = "22.23.4";
 const KIRO_CLI_APP: &str = "app/AmazonQ-For-CLI";
+/// ACP client name of the interactive Kiro CLI (`kiro-cli-non-interactive`
+/// in headless runs).
+const ACP_CLIENT: &str = "acp-client/kiro-cli";
 
-/// Smithy service identifier for the streaming chat API (`GenerateAssistantResponse`).
-pub const API_STREAMING: &str = "codewhispererstreaming/0.1.17975";
-/// Smithy service identifier for the non-streaming runtime API (profiles, models, usage).
-pub const API_RUNTIME: &str = "codewhispererruntime/0.1.17975";
-/// Smithy service identifier for the Kiro control-plane API
-/// (`KiroControlPlaneBearerService`, e.g. `ListAvailableModels`).
-pub const API_CONTROL_PLANE_BEARER: &str = "kirocontrolplanebearer/0.1.0";
-/// Smithy service identifier for the AWS SSO OIDC token API.
-pub const API_SSO_OIDC: &str = "ssooidc/1.100.0";
+/// Smithy service identifier for the runtime API (`KiroRuntimeService`:
+/// chat and `InvokeMCP`).
+pub const API_RUNTIME: &str = "kiroruntime#1.0.0";
+/// Smithy service identifier for the control-plane API
+/// (`KiroControlPlaneBearerService`: models, profile, usage).
+pub const API_CONTROL_PLANE_BEARER: &str = "kirocontrolplanebearer#1.0.0";
+
+/// `x-amz-target` prefix of the runtime API.
+pub const RUNTIME_SERVICE: &str = "KiroRuntimeService";
+/// `x-amz-target` prefix of the control-plane API.
+pub const CONTROL_PLANE_SERVICE: &str = "KiroControlPlaneBearerService";
 
 /// `origin` value the Kiro CLI sends in chat payloads and runtime API bodies.
 pub const KIRO_ORIGIN: &str = "KIRO_CLI";
 
-/// `tokentype` header value that tells Kiro the bearer token is an API key.
+/// `x-amzn-kiro-client-attribution` value of the Kiro CLI.
+pub const KIRO_CLIENT_ATTRIBUTION: &str = "kiro-cli";
+
+/// Agent mode of the Kiro CLI's default agent: the chat request's top-level
+/// `agentMode` and its `x-amzn-kiro-mode-identifier` header.
+pub const KIRO_AGENT_MODE: &str = "default-v2";
+
+/// `TokenType` header value that tells Kiro the bearer token is an API key.
 /// Without it Kiro treats the key as an OAuth token and answers `profileArn is required`.
 pub const TOKEN_TYPE_API_KEY: &str = "API_KEY";
+
+/// `TokenType` header value the Kiro CLI sends for IAM Identity Center
+/// (AWS SSO OIDC) tokens. Social-login tokens are sent without a `TokenType`.
+pub const TOKEN_TYPE_SSO_OIDC: &str = "SSO_OIDC";
 
 /// `User-Agent` value the Kiro CLI sends on social-login token refresh.
 pub const KIRO_CLI_REFRESH_USER_AGENT: &str = "Kiro-CLI";
 
-/// The Kiro CLI's short OS tag (`macos`, `linux`, `windows`), matching both the
-/// `os/` user-agent component and `envState.operatingSystem`.
+/// Smithy service identifier for the AWS SSO OIDC token API, whose refresh
+/// the Kiro CLI still performs from its Rust binary.
+pub const API_SSO_OIDC: &str = "ssooidc/1.100.0";
+const AWS_SDK_RUST_VERSION: &str = "1.6.0";
+const RUST_VERSION: &str = "1.94.1";
+
+/// Node.js `os.platform()` value (`darwin`, `linux`, `win32`) the Kiro CLI's
+/// agent harness reports in its `os/` user-agent components.
 ///
 /// # Examples
 ///
 /// ```
 /// let os = lanius_core::utils::kiro_os();
-/// assert!(!os.is_empty());
+/// assert!(["darwin", "linux", "win32"].contains(&os) || !os.is_empty());
 /// ```
 pub fn kiro_os() -> &'static str {
-    std::env::consts::OS
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    }
 }
 
-/// Kiro CLI `User-Agent` for a Kiro-specific smithy client identified by `api`.
+/// The kernel release (Node.js `os.release()`) that follows `os/<platform>#`
+/// in the user agent. Read once; `unknown` where it cannot be determined.
+fn os_release() -> &'static str {
+    static RELEASE: Lazy<String> = Lazy::new(|| {
+        let release = match std::env::consts::OS {
+            "linux" => std::fs::read_to_string("/proc/sys/kernel/osrelease").ok(),
+            "macos" => command_output("uname", &["-r"]),
+            "windows" => windows_release(),
+            _ => None,
+        };
+        release
+            .map(|release| release.trim().to_owned())
+            .filter(|release| !release.is_empty() && !release.contains(char::is_whitespace))
+            .unwrap_or_else(|| "unknown".to_owned())
+    });
+    &RELEASE
+}
+
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// `10.0.<build>` from `cmd /c ver`, the form Node.js reports on Windows.
+fn windows_release() -> Option<String> {
+    let text = command_output("cmd", &["/c", "ver"])?;
+    let start = text.find("10.")?;
+    let version: String = text[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect();
+    let mut parts = version.split('.');
+    Some(format!(
+        "{}.{}.{}",
+        parts.next()?,
+        parts.next()?,
+        parts.next()?
+    ))
+}
+
+/// The client-identity tail shared by both user agents.
+fn kiro_client_tag() -> String {
+    format!(
+        "KiroCLI/{KIRO_CLI_VERSION} KAS/{KAS_VERSION} os/{os} md/appVersion-{KIRO_CLI_VERSION} \
+         {KIRO_CLI_APP} {ACP_CLIENT}",
+        os = kiro_os()
+    )
+}
+
+/// Kiro CLI `User-Agent` for the smithy client identified by `api`.
 ///
 /// # Examples
 ///
 /// ```
-/// use lanius_core::utils::{API_STREAMING, kiro_user_agent};
+/// use lanius_core::utils::{API_RUNTIME, kiro_user_agent};
 ///
-/// let ua = kiro_user_agent(API_STREAMING);
-/// assert!(ua.starts_with("aws-sdk-rust/"));
-/// assert!(ua.ends_with("app/AmazonQ-For-CLI"));
+/// let ua = kiro_user_agent(API_RUNTIME);
+/// assert!(ua.starts_with("aws-sdk-js/1.0.0 ua/2.1 os/"));
+/// assert!(ua.contains(" api/kiroruntime#1.0.0 m/N KiroCLI/"));
+/// assert!(ua.ends_with("app/AmazonQ-For-CLI acp-client/kiro-cli"));
 /// ```
 pub fn kiro_user_agent(api: &str) -> String {
+    // The control-plane client also records the `E` (endpoint override)
+    // feature id, since KAS sets its endpoint explicitly.
+    let features = if api == API_CONTROL_PLANE_BEARER {
+        "N,E"
+    } else {
+        "N"
+    };
     format!(
-        "aws-sdk-rust/{AWS_SDK_RUST_VERSION} ua/2.1 api/{api} os/{os} lang/rust/{RUST_VERSION} \
-         md/appVersion-{KIRO_CLI_VERSION} {KIRO_CLI_APP}",
-        os = kiro_os()
+        "aws-sdk-js/1.0.0 ua/2.1 os/{os}#{release} lang/js md/nodejs#{NODE_VERSION} api/{api} \
+         m/{features} {tag}",
+        os = kiro_os(),
+        release = os_release(),
+        tag = kiro_client_tag()
     )
 }
 
-/// Kiro CLI `x-amz-user-agent` for a Kiro-specific smithy client identified by `api`.
+/// Kiro CLI `x-amz-user-agent`, the same for every smithy client.
 ///
 /// # Examples
 ///
 /// ```
-/// use lanius_core::utils::{API_RUNTIME, kiro_amz_user_agent};
+/// use lanius_core::utils::kiro_amz_user_agent;
 ///
-/// assert!(kiro_amz_user_agent(API_RUNTIME).contains(" m/F "));
+/// assert!(kiro_amz_user_agent().starts_with("aws-sdk-js/1.0.0 KiroCLI/"));
 /// ```
-pub fn kiro_amz_user_agent(api: &str) -> String {
-    format!(
-        "aws-sdk-rust/{AWS_SDK_RUST_VERSION} ua/2.1 api/{api} os/{os} lang/rust/{RUST_VERSION} \
-         m/F {KIRO_CLI_APP}",
-        os = kiro_os()
-    )
+pub fn kiro_amz_user_agent() -> String {
+    format!("aws-sdk-js/1.0.0 {}", kiro_client_tag())
 }
 
 /// `User-Agent` / `x-amz-user-agent` pair for a stock AWS SDK client (e.g. SSO OIDC),
@@ -161,7 +249,7 @@ pub fn kiro_amz_user_agent(api: &str) -> String {
 /// assert!(amz.contains("api/ssooidc/"));
 /// ```
 pub fn aws_sdk_user_agents(api: &str) -> (String, String) {
-    let os = kiro_os();
+    let os = std::env::consts::OS;
     (
         format!("aws-sdk-rust/{AWS_SDK_RUST_VERSION} os/{os} lang/rust/{RUST_VERSION}"),
         format!(
@@ -173,7 +261,8 @@ pub fn aws_sdk_user_agents(api: &str) -> (String, String) {
 
 /// Builds the Kiro CLI header set for a request to the smithy service `api`:
 /// bearer auth, AWS JSON content type, CLI user-agents, and a fresh
-/// `amz-sdk-invocation-id` per call. `x-amz-target` is added by callers.
+/// `amz-sdk-invocation-id` per call. `x-amz-target`, `TokenType` and the
+/// operation-specific `x-amzn-kiro-*` headers are added by callers.
 ///
 /// # Examples
 ///
@@ -181,46 +270,24 @@ pub fn aws_sdk_user_agents(api: &str) -> (String, String) {
 /// use lanius_core::utils::{API_RUNTIME, kiro_headers_for};
 ///
 /// let headers = kiro_headers_for("tok", API_RUNTIME);
-/// assert!(headers.iter().any(|(k, v)| *k == "User-Agent" && v.contains("codewhispererruntime")));
+/// assert!(headers.iter().any(|(k, v)| *k == "User-Agent" && v.contains("kiroruntime")));
 /// ```
 pub fn kiro_headers_for(token: &str, api: &str) -> Vec<(&'static str, String)> {
     vec![
         ("Authorization", format!("Bearer {token}")),
         ("Content-Type", "application/x-amz-json-1.0".to_string()),
         ("User-Agent", kiro_user_agent(api)),
-        ("x-amz-user-agent", kiro_amz_user_agent(api)),
-        // The Kiro CLI sends `true` unless the user opted in to sharing
-        // content with AWS (`codeWhisperer.shareCodeWhispererContentWithAWS`).
+        ("x-amz-user-agent", kiro_amz_user_agent()),
+        // The Kiro CLI sends this header when the user has not opted in to
+        // content collection; Lanius keeps that default.
         ("x-amzn-codewhisperer-optout", "true".to_string()),
         ("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string()),
         ("amz-sdk-request", "attempt=1; max=3".to_string()),
     ]
 }
 
-/// Appends `pairs` to `base` as a URL-encoded query string, as the Kiro CLI
-/// sends control-plane inputs.
-///
-/// # Examples
-///
-/// ```
-/// let url = lanius_core::utils::with_query("https://h/", &[("origin", "KIRO_CLI")]);
-/// assert_eq!(url, "https://h/?origin=KIRO_CLI");
-/// ```
-pub fn with_query(base: &str, pairs: &[(&str, &str)]) -> String {
-    let query = pairs
-        .iter()
-        .map(|(key, value)| format!("{key}={}", urlencoding::encode(value)))
-        .collect::<Vec<_>>()
-        .join("&");
-    if query.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base}?{query}")
-    }
-}
-
 /// Builds the full set of headers for a Kiro `GenerateAssistantResponse`
-/// request, matching what the Kiro CLI sends to the streaming API.
+/// request, matching what the Kiro CLI's default agent sends.
 ///
 /// # Examples
 ///
@@ -229,16 +296,35 @@ pub fn with_query(base: &str, pairs: &[(&str, &str)]) -> String {
 ///
 /// let headers = kiro_headers("my-token");
 /// assert!(headers.iter().any(|(k, v)| *k == "Authorization" && v == "Bearer my-token"));
-/// assert!(headers.iter().any(|(k, _)| *k == "x-amz-user-agent"));
+/// assert!(headers.iter().any(|(k, v)| *k == "x-amzn-kiro-mode-identifier" && v == "default-v2"));
 /// ```
 pub fn kiro_headers(token: &str) -> Vec<(&'static str, String)> {
-    let mut headers = kiro_headers_for(token, API_STREAMING);
+    let mut headers = kiro_headers_for(token, API_RUNTIME);
     headers.push((
         "x-amz-target",
-        "AmazonCodeWhispererStreamingService.GenerateAssistantResponse".to_string(),
+        format!("{RUNTIME_SERVICE}.GenerateAssistantResponse"),
     ));
-    headers.push(("x-kiro-attempt", "1;max=3".to_string()));
+    headers.push((
+        "x-amzn-kiro-client-attribution",
+        KIRO_CLIENT_ATTRIBUTION.to_string(),
+    ));
+    headers.push(("x-amzn-kiro-mode-identifier", KIRO_AGENT_MODE.to_string()));
+    headers.push(("x-amzn-kiro-fallback", "0;max=0".to_string()));
+    headers.push(("x-amzn-kiro-attempt", "1;max=3".to_string()));
     headers
+}
+
+/// Generates a fresh `agentContinuationId` (a UUID). The Kiro CLI mints one
+/// per user turn; Lanius, which keeps no state, mints one per request.
+///
+/// # Examples
+///
+/// ```
+/// let id = lanius_core::utils::generate_continuation_id();
+/// assert_eq!(id.len(), 36);
+/// ```
+pub fn generate_continuation_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Generates an OpenAI-style chat-completion id: `chatcmpl-<32 hex chars>`.
@@ -476,26 +562,33 @@ mod tests {
     #[test]
     fn user_agents_match_kiro_cli_byte_exact() {
         let os = kiro_os();
+        let release = os_release();
+        let tag = format!(
+            "KiroCLI/3.5.0 KAS/0.66.119 os/{os} md/appVersion-3.5.0 app/AmazonQ-For-CLI \
+             acp-client/kiro-cli"
+        );
         assert_eq!(
-            kiro_user_agent(API_STREAMING),
+            kiro_user_agent(API_RUNTIME),
             format!(
-                "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17975 os/{os} \
-                 lang/rust/1.92.0 md/appVersion-2.29.1 app/AmazonQ-For-CLI"
+                "aws-sdk-js/1.0.0 ua/2.1 os/{os}#{release} lang/js md/nodejs#22.23.4 \
+                 api/kiroruntime#1.0.0 m/N {tag}"
             )
         );
         assert_eq!(
-            kiro_amz_user_agent(API_RUNTIME),
+            kiro_user_agent(API_CONTROL_PLANE_BEARER),
             format!(
-                "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.17975 os/{os} \
-                 lang/rust/1.92.0 m/F app/AmazonQ-For-CLI"
+                "aws-sdk-js/1.0.0 ua/2.1 os/{os}#{release} lang/js md/nodejs#22.23.4 \
+                 api/kirocontrolplanebearer#1.0.0 m/N,E {tag}"
             )
         );
+        assert_eq!(kiro_amz_user_agent(), format!("aws-sdk-js/1.0.0 {tag}"));
+        let rust_os = std::env::consts::OS;
         assert_eq!(
             aws_sdk_user_agents(API_SSO_OIDC),
             (
-                format!("aws-sdk-rust/1.3.15 os/{os} lang/rust/1.92.0"),
+                format!("aws-sdk-rust/1.6.0 os/{rust_os} lang/rust/1.94.1"),
                 format!(
-                    "aws-sdk-rust/1.3.15 ua/2.1 api/ssooidc/1.100.0 os/{os} lang/rust/1.92.0 \
+                    "aws-sdk-rust/1.6.0 ua/2.1 api/ssooidc/1.100.0 os/{rust_os} lang/rust/1.94.1 \
                      app/AmazonQ-For-CLI"
                 ),
             )
@@ -503,46 +596,53 @@ mod tests {
     }
 
     #[test]
-    fn headers_never_identify_as_kiro_ide() {
+    fn os_tag_uses_node_platform_names() {
+        let expected = match std::env::consts::OS {
+            "macos" => "darwin",
+            "windows" => "win32",
+            other => other,
+        };
+        assert_eq!(kiro_os(), expected);
+        assert!(!os_release().is_empty());
+        assert!(!os_release().contains(char::is_whitespace));
+    }
+
+    #[test]
+    fn headers_never_identify_as_kiro_ide_or_the_rust_streaming_client() {
         for (name, value) in kiro_headers("tok") {
             assert!(!value.contains("KiroIDE"), "{name} still claims KiroIDE");
             assert!(
-                !value.contains("aws-sdk-js"),
-                "{name} still claims the JS SDK"
+                !value.contains("codewhispererstreaming"),
+                "{name} still claims the CLI 2.x streaming client"
             );
         }
-        assert_eq!(kiro_os(), std::env::consts::OS);
     }
 
     #[test]
     fn header_set_is_complete() {
         let headers = kiro_headers("tok");
-        let names: Vec<&str> = headers.iter().map(|(k, _)| *k).collect();
-        for expected in [
-            "Authorization",
-            "Content-Type",
-            "x-amz-target",
-            "User-Agent",
-            "x-amz-user-agent",
-            "x-amzn-codewhisperer-optout",
-            "x-kiro-attempt",
-            "amz-sdk-invocation-id",
-            "amz-sdk-request",
-        ] {
-            assert!(names.contains(&expected), "missing header {expected}");
-        }
-        let auth = &headers
-            .iter()
-            .find(|(k, _)| *k == "Authorization")
-            .unwrap()
-            .1;
-        assert_eq!(auth, "Bearer tok");
-        let ct = &headers
-            .iter()
-            .find(|(k, _)| *k == "Content-Type")
-            .unwrap()
-            .1;
-        assert_eq!(ct, "application/x-amz-json-1.0");
+        let value = |name: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or_else(|| panic!("missing header {name}"))
+        };
+        assert_eq!(value("Authorization"), "Bearer tok");
+        assert_eq!(value("Content-Type"), "application/x-amz-json-1.0");
+        assert_eq!(
+            value("x-amz-target"),
+            "KiroRuntimeService.GenerateAssistantResponse"
+        );
+        assert_eq!(value("x-amzn-kiro-client-attribution"), "kiro-cli");
+        assert_eq!(value("x-amzn-kiro-mode-identifier"), "default-v2");
+        assert_eq!(value("x-amzn-kiro-fallback"), "0;max=0");
+        assert_eq!(value("x-amzn-kiro-attempt"), "1;max=3");
+        assert_eq!(value("amz-sdk-request"), "attempt=1; max=3");
+        assert_eq!(value("x-amzn-codewhisperer-optout"), "true");
+        assert!(value("User-Agent").contains("api/kiroruntime#1.0.0"));
+        assert!(value("x-amz-user-agent").starts_with("aws-sdk-js/1.0.0 KiroCLI/3.5.0"));
+        assert!(headers.iter().all(|(k, _)| *k != "x-kiro-attempt"));
     }
 
     #[test]

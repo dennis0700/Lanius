@@ -19,12 +19,17 @@ use super::guards::{check_payload_size, trim_payload_to_limit};
 use crate::{
     config::Config,
     error::{GatewayError, Result},
-    utils::{KIRO_ORIGIN, kiro_os},
+    utils::{KIRO_AGENT_MODE, KIRO_ORIGIN, generate_continuation_id},
 };
+
+/// The assistant turn the Kiro CLI places after its system prompt in the history.
+pub(crate) const SYSTEM_PROMPT_ACK: &str = "I will follow these instructions.";
 
 /// Placeholder text substituted for a message whose content would otherwise be empty.
 /// Kiro's history format does not tolerate empty `content` fields, so this fills the gap
-/// in a way that is clearly recognizable as synthetic rather than real content.
+/// in a way that is clearly recognizable as synthetic rather than real content. User turns
+/// carrying tool results keep an empty `content` instead, as the Kiro CLI sends them: the
+/// model would otherwise answer the placeholder rather than use the results.
 const EMPTY_PLACEHOLDER: &str = "(empty placeholder)";
 /// Placeholder text substituted for a tool result whose content is empty, for the same
 /// reason as [`EMPTY_PLACEHOLDER`] but scoped to tool-result text specifically.
@@ -51,6 +56,9 @@ pub struct UnifiedMessage {
     pub tool_results: Vec<Value>,
     /// Inline images attached to this turn.
     pub images: Vec<UnifiedImage>,
+    /// Native reasoning Kiro produced for an assistant turn, replayed as its
+    /// `reasoningContent` so the model can continue from it.
+    pub reasoning: Option<UnifiedReasoning>,
 }
 
 impl UnifiedMessage {
@@ -73,6 +81,7 @@ impl UnifiedMessage {
             tool_calls: Vec::new(),
             tool_results: Vec::new(),
             images: Vec::new(),
+            reasoning: None,
         }
     }
     /// Convenience constructor for a plain-text message (the common case).
@@ -99,6 +108,44 @@ pub struct UnifiedImage {
     pub media_type: String,
     /// The image's base64-encoded raw bytes.
     pub data: String,
+}
+
+/// Native reasoning from an earlier assistant turn, as Kiro produced it.
+///
+/// Kiro verifies the signature when the reasoning is sent back and rejects the whole
+/// request with `THINKING_SIGNATURE_INVALID` if it is not one Kiro issued, so only
+/// signatures that came from Kiro may be stored here (see [`is_upstream_signature`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnifiedReasoning {
+    /// Summarized thinking text and the signature closing it.
+    Text {
+        /// The thinking text (Kiro accepts `"..."` for hidden reasoning).
+        text: String,
+        /// The signature Kiro sent with the thinking block.
+        signature: String,
+    },
+    /// Fully redacted reasoning: Kiro's base64 `redactedContent`.
+    Redacted(String),
+}
+
+/// Prefix of the placeholder thinking signatures Lanius generates when Kiro sent none
+/// (see `crate::api::anthropic::sse::generate_thinking_signature`).
+pub const PLACEHOLDER_SIGNATURE_PREFIX: &str = "sig_";
+
+/// Whether `signature` can have come from Kiro rather than being one of Lanius's own
+/// placeholders, which Kiro would reject.
+///
+/// # Examples
+///
+/// ```
+/// use lanius_core::convert::is_upstream_signature;
+///
+/// assert!(is_upstream_signature(".KTR~~eyJ2IjoxfQ=="));
+/// assert!(!is_upstream_signature("sig_0123456789abcdef0123456789abcdef"));
+/// assert!(!is_upstream_signature(""));
+/// ```
+pub fn is_upstream_signature(signature: &str) -> bool {
+    !signature.is_empty() && !signature.starts_with(PLACEHOLDER_SIGNATURE_PREFIX)
 }
 
 /// The provider-agnostic representation of one tool definition offered to the model.
@@ -501,6 +548,9 @@ pub fn merge_adjacent_messages(messages: Vec<UnifiedMessage>) -> Vec<UnifiedMess
             last.content = merge_content(std::mem::take(&mut last.content), message.content);
             if message.role == "assistant" {
                 last.tool_calls.extend(message.tool_calls);
+                if last.reasoning.is_none() {
+                    last.reasoning = message.reasoning;
+                }
             }
             if message.role == "user" {
                 last.tool_results.extend(message.tool_results);
@@ -616,9 +666,7 @@ pub fn build_kiro_history(messages: &[UnifiedMessage], model_id: &str) -> Result
     messages
         .iter()
         .map(|message| match message.role.as_str() {
-            "user" => {
-                Ok(json!({"userInputMessage": build_user(message, model_id, Vec::new(), false)}))
-            }
+            "user" => Ok(json!({"userInputMessage": build_user(message, model_id, Vec::new())})),
             "assistant" => Ok(json!({"assistantResponseMessage": build_assistant(message)?})),
             _ => Err(GatewayError::Internal(
                 "history received unnormalized role".to_owned(),
@@ -670,10 +718,9 @@ pub struct KiroPayloadInput<'a> {
 ///    normalize_message_roles(ensure_first_message_is_user(...)))`).
 /// 5. Split the normalized sequence into "history" (everything but the last message) and
 ///    "current" (the last message) — Kiro always wants the most recent turn expressed
-///    separately from history, as `currentMessage`. The system prompt (if any) is
-///    prepended to whichever of history's first message or the current message ends up
-///    being the actual first turn sent, since only one of those two prepend targets can be
-///    correct at a time depending on how many messages exist.
+///    separately from history, as `currentMessage`. The system prompt (if any) opens the
+///    history as a user turn followed by an assistant turn acknowledging it, as the Kiro
+///    CLI sends it.
 /// 6. If the current turn is itself an assistant message (the conversation ended on an
 ///    assistant turn — e.g. the caller only sent an assistant message with no trailing
 ///    user turn), it is pushed onto history instead and replaced by an empty-placeholder
@@ -681,8 +728,10 @@ pub struct KiroPayloadInput<'a> {
 ///    message.
 /// 7. Attach the (possibly relocated) tool specifications to the current turn only
 ///    (tools are declared once per request, not per history entry), assemble the final
-///    `conversationState` object, and add any native reasoning fields as the
-///    top-level `additionalModelRequestFields`.
+///    `conversationState` object with the Kiro CLI's agent identity (a fresh
+///    `agentContinuationId`, the conversation as its own `rootConversationId`, and the
+///    top-level `agentMode`), and add any native reasoning fields as the top-level
+///    `additionalModelRequestFields`.
 /// 8. If `config.auto_trim_payload` is set and the assembled payload exceeds
 ///    `config.kiro_max_payload_bytes`, trim it via [`super::guards::trim_payload_to_limit`].
 ///
@@ -740,22 +789,20 @@ pub fn build_kiro_payload(
             "No messages to send".to_owned(),
         ));
     };
-    // The system prompt is prepended to whichever turn will actually be sent *first*:
-    // if there is any history at all, that's history[0]; if the conversation is a single
-    // turn (no history), it's handled further below by prepending to `current_content`
-    // instead once we know `history` ended up empty.
-    if !full_system.is_empty() && !history_messages.is_empty() {
-        history_messages[0].content = Value::String(format!(
-            "{}\n\n{}",
-            full_system,
-            extract_text_content(&history_messages[0].content)
-        ));
+    // The Kiro CLI sends its system prompt as the opening user/assistant pair of the
+    // history rather than in the `systemPrompt` field (which Kiro rejects unless a
+    // server-side feature flag allows it).
+    let mut history = Vec::new();
+    if !full_system.is_empty() {
+        history.push(json!({"userInputMessage": build_user(
+            &UnifiedMessage::text("user", full_system),
+            model_id,
+            Vec::new(),
+        )}));
+        history.push(json!({"assistantResponseMessage": {"content": SYSTEM_PROMPT_ACK}}));
     }
-    let mut history = build_kiro_history(&history_messages, model_id)?;
+    history.extend(build_kiro_history(&history_messages, model_id)?);
     let mut current_content = extract_text_content(&current.content);
-    if !full_system.is_empty() && history.is_empty() {
-        current_content = format!("{}\n\n{current_content}", full_system);
-    }
     if current.role == "assistant" {
         // Kiro's `currentMessage` must be a user turn; if the conversation actually ended
         // on an assistant message, move it into history instead (via `build_assistant`, so
@@ -764,14 +811,19 @@ pub fn build_kiro_payload(
         history.push(json!({"assistantResponseMessage": build_assistant(&current)?}));
         current_content = EMPTY_PLACEHOLDER.to_owned();
     }
-    if current_content.is_empty() {
+    if current_content.is_empty() && current.tool_results.is_empty() {
         current_content = EMPTY_PLACEHOLDER.to_owned();
     }
     let kiro_tools = convert_tools_to_kiro_format(processed_tools.as_deref());
     let mut current_message = current;
     current_message.content = Value::String(current_content);
-    let current_user = build_user(&current_message, model_id, kiro_tools, true);
+    let current_user = build_user(&current_message, model_id, kiro_tools);
+    // Field order follows the Kiro CLI's requests.
     let mut state = Map::new();
+    state.insert(
+        "currentMessage".to_owned(),
+        json!({"userInputMessage":current_user}),
+    );
     state.insert(
         "chatTriggerType".to_owned(),
         Value::String("MANUAL".to_owned()),
@@ -780,19 +832,26 @@ pub fn build_kiro_payload(
         "conversationId".to_owned(),
         Value::String(conversation_id.to_owned()),
     );
+    state.insert("history".to_owned(), Value::Array(history));
     state.insert(
-        "currentMessage".to_owned(),
-        json!({"userInputMessage":current_user}),
+        "agentContinuationId".to_owned(),
+        Value::String(generate_continuation_id()),
     );
     state.insert("agentTaskType".to_owned(), Value::String("vibe".to_owned()));
-    if !history.is_empty() {
-        state.insert("history".to_owned(), Value::Array(history));
-    }
+    // Lanius has no sub-agents, so every conversation is its own root.
+    state.insert(
+        "rootConversationId".to_owned(),
+        Value::String(conversation_id.to_owned()),
+    );
     let mut root = Map::new();
     root.insert("conversationState".to_owned(), Value::Object(state));
     if let Some(profile) = profile_arn.filter(|profile| !profile.is_empty()) {
         root.insert("profileArn".to_owned(), Value::String(profile.to_owned()));
     }
+    root.insert(
+        "agentMode".to_owned(),
+        Value::String(KIRO_AGENT_MODE.to_owned()),
+    );
     if let Some(fields) = model_request_fields {
         root.insert("additionalModelRequestFields".to_owned(), fields);
     }
@@ -863,18 +922,30 @@ fn preprocess_tool_context(messages: Vec<UnifiedMessage>, has_tools: bool) -> Ve
     result
 }
 
-/// Builds a Kiro `userInputMessage` object from a unified user message. `current`
-/// distinguishes whether this is the conversation's final ("current") turn — only the
-/// current turn ever carries a `tools` list in `userInputMessageContext`, since Kiro
-/// expects tool declarations attached once per request rather than repeated in every
-/// history entry.
-fn build_user(message: &UnifiedMessage, model_id: &str, tools: Vec<Value>, current: bool) -> Value {
+/// Builds a Kiro `userInputMessage` object from a unified user message. `tools` is
+/// non-empty only for the conversation's final ("current") turn, since Kiro expects tool
+/// declarations attached once per request rather than repeated in every history entry.
+/// Fields follow the Kiro CLI's order; like the Kiro CLI, no `envState` is sent.
+fn build_user(message: &UnifiedMessage, model_id: &str, tools: Vec<Value>) -> Value {
     let mut user = Map::new();
-    user.insert(
-        "content".to_owned(),
-        Value::String(nonempty(&extract_text_content(&message.content))),
-    );
-    user.insert("modelId".to_owned(), Value::String(model_id.to_owned()));
+    let text = extract_text_content(&message.content);
+    let results = convert_tool_results_to_kiro_format(&message.tool_results);
+    let content = if results.is_empty() {
+        nonempty(&text)
+    } else {
+        text
+    };
+    user.insert("content".to_owned(), Value::String(content));
+    let mut context = Map::new();
+    if !results.is_empty() {
+        context.insert("toolResults".to_owned(), Value::Array(results));
+    }
+    if !tools.is_empty() {
+        context.insert("tools".to_owned(), Value::Array(tools));
+    }
+    if !context.is_empty() {
+        user.insert("userInputMessageContext".to_owned(), Value::Object(context));
+    }
     user.insert("origin".to_owned(), Value::String(KIRO_ORIGIN.to_owned()));
     let extracted;
     let images: &[UnifiedImage] = if message.images.is_empty() {
@@ -887,37 +958,13 @@ fn build_user(message: &UnifiedMessage, model_id: &str, tools: Vec<Value>, curre
     if !images.is_empty() {
         user.insert("images".to_owned(), Value::Array(images));
     }
-    let results = convert_tool_results_to_kiro_format(&message.tool_results);
-    let mut context = Map::new();
-    if current {
-        // The Kiro CLI attaches its environment to the current turn only.
-        let mut env = Map::new();
-        env.insert(
-            "operatingSystem".to_owned(),
-            Value::String(kiro_os().to_owned()),
-        );
-        if let Ok(cwd) = std::env::current_dir() {
-            env.insert(
-                "currentWorkingDirectory".to_owned(),
-                Value::String(cwd.to_string_lossy().into_owned()),
-            );
-        }
-        context.insert("envState".to_owned(), Value::Object(env));
-    }
-    if !tools.is_empty() {
-        context.insert("tools".to_owned(), Value::Array(tools));
-    }
-    if !results.is_empty() {
-        context.insert("toolResults".to_owned(), Value::Array(results));
-    }
-    if !context.is_empty() {
-        user.insert("userInputMessageContext".to_owned(), Value::Object(context));
-    }
+    user.insert("modelId".to_owned(), Value::String(model_id.to_owned()));
     Value::Object(user)
 }
 
 /// Builds a Kiro `assistantResponseMessage` object from a unified assistant message,
-/// including its `toolUses` array (via `extract_tool_uses`) if it has any tool calls.
+/// including its `toolUses` array (via `extract_tool_uses`) if it has any tool calls and
+/// its Kiro-issued reasoning as `reasoningContent`.
 ///
 /// Unlike [`build_user`], `content` is passed through as-is even when empty: Kiro accepts
 /// an empty `assistantResponseMessage.content` (confirmed against the live API, with and
@@ -932,6 +979,21 @@ fn build_assistant(message: &UnifiedMessage) -> Result<Value> {
     );
     if !uses.is_empty() {
         assistant.insert("toolUses".to_owned(), Value::Array(uses));
+    }
+    match &message.reasoning {
+        Some(UnifiedReasoning::Text { text, signature }) if is_upstream_signature(signature) => {
+            assistant.insert(
+                "reasoningContent".to_owned(),
+                json!({"reasoningText": {"text": text, "signature": signature}}),
+            );
+        }
+        Some(UnifiedReasoning::Redacted(data)) if !data.is_empty() => {
+            assistant.insert(
+                "reasoningContent".to_owned(),
+                json!({"redactedContent": data}),
+            );
+        }
+        _ => {}
     }
     Ok(Value::Object(assistant))
 }
@@ -1060,6 +1122,7 @@ mod tests {
                 tool_calls: vec![],
                 tool_results: vec![json!({"tool_use_id":"x","content":"r"})],
                 images: vec![],
+                reasoning: None,
             }],
             true,
         );
@@ -1074,6 +1137,7 @@ mod tests {
             tool_calls: vec![json!({"id":"a"})],
             tool_results: vec![],
             images: vec![],
+            reasoning: None,
         };
         let b = UnifiedMessage {
             tool_calls: vec![json!({"id":"b"})],
@@ -1188,6 +1252,52 @@ mod tests {
                 .contains("工具")
         );
     }
+    #[test]
+    fn kiro_signed_reasoning_is_replayed_and_placeholders_are_dropped() {
+        let assistant = |reasoning| UnifiedMessage {
+            reasoning: Some(reasoning),
+            ..UnifiedMessage::text("assistant", "a")
+        };
+        let build = |reasoning| {
+            build_kiro_payload(
+                KiroPayloadInput {
+                    messages: vec![
+                        UnifiedMessage::text("user", "u"),
+                        assistant(reasoning),
+                        UnifiedMessage::text("user", "q"),
+                    ],
+                    system_prompt: "",
+                    model_id: "m",
+                    tools: None,
+                    conversation_id: "id",
+                    profile_arn: None,
+                    model_request_fields: None,
+                },
+                &cfg(),
+            )
+            .unwrap()
+            .payload["conversationState"]["history"][1]["assistantResponseMessage"]
+                .clone()
+        };
+        assert_eq!(
+            build(UnifiedReasoning::Text {
+                text: "...".into(),
+                signature: ".KTR~~sig".into(),
+            })["reasoningContent"],
+            json!({"reasoningText": {"text": "...", "signature": ".KTR~~sig"}})
+        );
+        assert_eq!(
+            build(UnifiedReasoning::Redacted("LktUUn4=".into()))["reasoningContent"],
+            json!({"redactedContent": "LktUUn4="})
+        );
+        // Kiro rejects signatures it did not issue with THINKING_SIGNATURE_INVALID.
+        let placeholder = build(UnifiedReasoning::Text {
+            text: "x".into(),
+            signature: format!("{PLACEHOLDER_SIGNATURE_PREFIX}0123"),
+        });
+        assert!(placeholder.get("reasoningContent").is_none());
+    }
+
     #[test]
     fn schema_cleaning_is_recursive() {
         let schema = Map::from_iter([(

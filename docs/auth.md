@@ -56,7 +56,7 @@ such as `/usage` continue to use the first configured key. In this mode:
   returns an error telling the user to check or regenerate the key. The
   per-key upstream client does not retry a 403; the gateway request handler
   can switch to another configured key.
-- **One extra header.** Every upstream request carries `tokentype: API_KEY`.
+- **One extra header.** Every upstream request carries `TokenType: API_KEY`.
   Without it Kiro treats the bearer value as an OAuth token and answers
   `ValidationException: profileArn is required for this request`.
 - **No profile.** No `profileArn` is auto-fetched, so none is sent unless
@@ -72,9 +72,12 @@ such as `/usage` continue to use the first configured key. In this mode:
 Verified against a live key (Power plan, `us-east-1`): chat (streaming and
 non-streaming, OpenAI and Anthropic routes), the model catalog, and
 `usage`/`account` all work with only these differences. Observed on the wire:
-`origin` may be either `KIRO_CLI` or `AI_EDITOR`; the `tokentype` header is
+`origin` may be either `KIRO_CLI` or `AI_EDITOR`; the `TokenType` header is
 what matters; `runtime` does not implement `ListAvailableModels` but
 `management` does; and requests without the Kiro CLI `User-Agent` get a 403.
+
+IAM Identity Center (AWS SSO OIDC) tokens are sent with `TokenType: SSO_OIDC`,
+as the Kiro CLI sends them; social-login tokens carry no `TokenType`.
 
 ## Auth type
 

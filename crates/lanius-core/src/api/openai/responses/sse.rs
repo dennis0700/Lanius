@@ -26,7 +26,7 @@ use crate::api::search_loop::LoopEvent;
 use crate::convert::{TOOL_SEARCH_TOOL_NAME, ToolNamespaces};
 use crate::error::{GatewayError, Result};
 use crate::tokenizer::count_tokens;
-use crate::truncation::is_content_truncated;
+use crate::truncation::is_output_truncated;
 use crate::upstream::{
     KiroEvent, KiroEventType, ToolCall, WebSearchCall, deduplicate_tool_calls,
     parse_bracket_tool_calls,
@@ -134,6 +134,7 @@ struct ResponseBuilder {
     metering: Option<Value>,
     received_usage: bool,
     context_usage: Option<f64>,
+    stop_reason: Option<String>,
 }
 
 impl ResponseBuilder {
@@ -154,6 +155,7 @@ impl ResponseBuilder {
             metering: None,
             received_usage: false,
             context_usage: None,
+            stop_reason: None,
         }
     }
 
@@ -235,6 +237,11 @@ impl ResponseBuilder {
                 context_usage_percentage: Some(percentage),
                 ..
             } => self.context_usage = Some(percentage),
+            KiroEvent {
+                event_type: KiroEventType::StopReason,
+                content: Some(reason),
+                ..
+            } => self.stop_reason = Some(reason),
             _ => {}
         }
     }
@@ -493,7 +500,8 @@ impl ResponseBuilder {
         let mut calls = std::mem::take(&mut self.tool_calls);
         calls.extend(parse_bracket_tool_calls(&self.full_content));
         let calls = deduplicate_tool_calls(calls);
-        let truncated = is_content_truncated(
+        let truncated = is_output_truncated(
+            self.stop_reason.as_deref(),
             self.received_usage || self.context_usage.is_some(),
             &self.full_content,
             !calls.is_empty(),

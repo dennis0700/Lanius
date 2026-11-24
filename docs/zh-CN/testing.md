@@ -13,7 +13,8 @@ cargo test --workspace
 - **单元测试**：`lanius-core` 和 `lanius-gui` 中几乎每个模块都在文件末尾有一个 `#[cfg(test)] mod tests`，直接测试该模块的函数和类型（包括仅 `pub(crate)` 可见、集成测试无法访问的内部实现）。这部分构成了测试套件的主体。
 - **文档测试**：大多数公共函数和类型都带有 `# Examples` 小节，其中包含可运行的代码块；`cargo test` 也会编译并运行它们。它们既是使用文档，也是针对所示 API 签名的回归测试。
 - **集成测试**（`crates/*/tests/*.rs`）：以外部使用者的视角，从 crate 外部测试其公共 API：
-  - `lanius-core/tests/tool_followup_payload.rs`：在完整的请求转换过程中，验证工具定义/工具结果别名的往返一致性（参见 [conversion.md](conversion.md) 和 [compatibility.md](compatibility.md#工具名别名)）。
+  - `lanius-core/tests/tool_followup_payload.rs`：在完整的请求转换过程中，验证工具定义/工具结果别名的往返一致性（参见 [conversion.md](conversion.md) 和 [compatibility.md](compatibility.md#工具名别名)），以及 Kiro CLI 3.5.0 的请求形态：`conversationState` 的字段顺序、agent 身份字段，以及 history 开头的 system prompt 对。
+  - `lanius-core/tests/kiro_cli_captures.rs`：基于从官方 Kiro CLI 3.5.0 捕获的原始响应流的 golden 测试（`tests/fixtures/*.bin`：一个带隐藏 reasoning 签名的 tool-use 轮次，以及一个 reasoning 被完全隐藏的轮次），以 1 到 64 字节的每一种分块大小解码。
   - `lanius-core/tests/parser_properties.rs`：针对 `AwsEventStreamParser` 的基于属性的测试（见下文）。
   - `lanius-cli/tests/gui_api_contract.rs`：契约测试，保护 `lanius-core` 的 `Config`/`server` 与 `lanius-gui` 之间的接口。`lanius-gui` 以库的形式嵌入网关，而不是把 `lanius-cli` 作为子进程启动。该测试专门用于在无需构建完整 Slint UI 的情况下，捕获对“GUI API 接口面”的破坏性变更（即桌面应用将其设置映射到哪些 `Config` 字段，以及它所驱动的 `spawn`/`shutdown` 生命周期）。其中包含一个端到端检查：在操作系统分配的临时端口上启动网关，请求 `/health`，优雅地关闭网关，并确认监听器确实已经关闭。
 
@@ -35,7 +36,7 @@ cargo test --workspace
 cargo test -p lanius-core
 
 # One test (by substring match on the test name)
-cargo test -p lanius-core is_content_truncated
+cargo test -p lanius-core is_output_truncated
 
 # Doctests only
 cargo test --workspace --doc

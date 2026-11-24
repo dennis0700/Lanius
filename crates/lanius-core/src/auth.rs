@@ -56,7 +56,7 @@ use refresh::{RefreshEndpoints, RefreshError, RefreshOutcome};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthType {
     /// A long-lived Kiro API key (`KIRO_API_KEY`) sent as a bearer token with
-    /// `tokentype: API_KEY`. Never refreshed or persisted.
+    /// `TokenType: API_KEY`. Never refreshed or persisted.
     ApiKey,
     /// The Kiro desktop app's own refresh endpoint (refresh token only, no client
     /// id/secret).
@@ -119,6 +119,9 @@ pub struct AuthManager {
     config: Config,
     fingerprint: String,
     state: Mutex<TokenState>,
+    /// Mirrors `state.auth_type == AuthType::AwsSsoOidc`, so the synchronous
+    /// header builders can pick the `TokenType` header without the state lock.
+    sso_oidc: AtomicBool,
     profile_autofetch: ProfileArnAutofetchHook,
     api_key_pool: Option<ApiKeyPool>,
 }
@@ -188,6 +191,7 @@ impl AuthManager {
         Ok(Self {
             config,
             fingerprint: machine_fingerprint().to_string(),
+            sso_oidc: AtomicBool::new(auth_type == AuthType::AwsSsoOidc),
             state: Mutex::new(TokenState {
                 credentials,
                 auth_type,
@@ -562,7 +566,11 @@ impl AuthManager {
                 .unwrap_or_else(|| state.region.clone())
         };
         let body = br#"{}"#.to_vec();
-        let headers = ProfileArnAutofetchHook::profile_headers(token);
+        let token_type = self
+            .sso_oidc
+            .load(Ordering::Relaxed)
+            .then_some(crate::utils::TOKEN_TYPE_SSO_OIDC);
+        let headers = ProfileArnAutofetchHook::profile_headers(token, token_type);
         let url = ProfileArnAutofetchHook::profile_url(&region);
         let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
         if let Some(proxy_url) = self
@@ -766,7 +774,8 @@ impl AuthManager {
     }
 
     /// Returns the request headers for the smithy service `api`: the Kiro CLI header set
-    /// plus `tokentype: API_KEY` when authenticating with an API key.
+    /// plus the `TokenType` header the Kiro CLI sends for API keys (`API_KEY`) and IAM
+    /// Identity Center tokens (`SSO_OIDC`). Social-login tokens carry no `TokenType`.
     ///
     /// # Examples
     ///
@@ -777,13 +786,13 @@ impl AuthManager {
     ///
     /// let manager = AuthManager::new(Config::default()).expect("valid config");
     /// let headers = manager.headers_for("tok", API_RUNTIME);
-    /// assert!(headers.iter().all(|(name, _)| *name != "tokentype"));
+    /// assert!(headers.iter().all(|(name, _)| *name != "TokenType"));
     /// ```
     pub fn headers_for(&self, token: &str, api: &str) -> Vec<(&'static str, String)> {
         self.with_token_type(crate::utils::kiro_headers_for(token, api))
     }
 
-    /// Like [`AuthManager::headers_for`], for the streaming chat API
+    /// Like [`AuthManager::headers_for`], for the runtime chat API
     /// (`GenerateAssistantResponse`), including its `x-amz-target`.
     ///
     /// # Examples
@@ -804,8 +813,15 @@ impl AuthManager {
         &self,
         mut headers: Vec<(&'static str, String)>,
     ) -> Vec<(&'static str, String)> {
-        if self.is_api_key() {
-            headers.push(("tokentype", crate::utils::TOKEN_TYPE_API_KEY.to_string()));
+        let token_type = if self.is_api_key() {
+            Some(crate::utils::TOKEN_TYPE_API_KEY)
+        } else if self.sso_oidc.load(Ordering::Relaxed) {
+            Some(crate::utils::TOKEN_TYPE_SSO_OIDC)
+        } else {
+            None
+        };
+        if let Some(token_type) = token_type {
+            headers.push(("TokenType", token_type.to_string()));
         }
         headers
     }
@@ -853,6 +869,8 @@ impl AuthManager {
         };
         state.credentials.merge_sqlite(path)?;
         state.auth_type = AuthType::from_credentials(&state.credentials);
+        self.sso_oidc
+            .store(state.auth_type == AuthType::AwsSsoOidc, Ordering::Relaxed);
         state.region = final_api_region(&self.config, &state.credentials);
         Ok(())
     }
@@ -1457,18 +1475,18 @@ mod tests {
             "https://management.us-east-1.kiro.dev/"
         );
 
-        let headers = ProfileArnAutofetchHook::profile_headers("access-token");
+        let headers = ProfileArnAutofetchHook::profile_headers("access-token", None);
         assert_eq!(
             headers[reqwest::header::AUTHORIZATION],
             "Bearer access-token"
         );
         assert_eq!(
             headers["x-amz-target"],
-            "AmazonCodeWhispererService.ListAvailableProfiles"
+            "KiroControlPlaneBearerService.ListAvailableProfiles"
         );
         assert_eq!(
             headers[reqwest::header::USER_AGENT],
-            crate::utils::kiro_user_agent(crate::utils::API_RUNTIME)
+            crate::utils::kiro_user_agent(crate::utils::API_CONTROL_PLANE_BEARER)
         );
 
         assert_eq!(
@@ -1646,32 +1664,36 @@ mod tests {
     }
 
     #[test]
-    fn api_key_headers_carry_token_type_only_in_api_key_mode() {
+    fn token_type_header_follows_the_auth_type() {
         let key_auth = AuthManager::new(Config {
             kiro_api_key: Some("ksk_test".into()),
             ..Config::default()
         })
         .unwrap();
-        let oauth_auth = AuthManager::new(Config::default()).unwrap();
+        let social_auth = AuthManager::new(Config::default()).unwrap();
         let has = |headers: &[(&'static str, String)], name: &str, value: &str| {
             headers.iter().any(|(k, v)| *k == name && v == value)
         };
         let key_headers = key_auth.chat_headers("ksk_test");
-        assert!(has(&key_headers, "tokentype", "API_KEY"));
+        assert!(has(&key_headers, "TokenType", "API_KEY"));
         assert!(has(&key_headers, "Authorization", "Bearer ksk_test"));
         assert!(has(
             &key_headers,
             "x-amz-target",
-            "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+            "KiroRuntimeService.GenerateAssistantResponse"
         ));
-        let oauth_headers = oauth_auth.chat_headers("tok");
-        assert!(oauth_headers.iter().all(|(k, _)| *k != "tokentype"));
+        let social_headers = social_auth.chat_headers("tok");
+        assert!(social_headers.iter().all(|(k, _)| *k != "TokenType"));
         assert!(
-            oauth_auth
+            social_auth
                 .headers_for("tok", crate::utils::API_RUNTIME)
                 .iter()
-                .all(|(k, _)| *k != "tokentype")
+                .all(|(k, _)| *k != "TokenType")
         );
+
+        let oidc_auth = AuthManager::new(Config::default()).unwrap();
+        oidc_auth.sso_oidc.store(true, Ordering::Relaxed);
+        assert!(has(&oidc_auth.chat_headers("tok"), "TokenType", "SSO_OIDC"));
     }
 
     #[tokio::test]

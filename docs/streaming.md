@@ -11,7 +11,7 @@ simpler than implementing the full binary format.
 flowchart TD
     raw["raw upstream bytes"]
     feed["AwsEventStreamParser::feed (upstream::parser)<br/>buffers partial UTF-8 + partial JSON across chunk boundaries<br/>scans for the earliest matching key-prefix pattern"]
-    events["ParserEvent::{Content, Reasoning, Usage, ContextUsage}<br/>(+ internally accumulated multi-chunk ToolCall state)"]
+    events["ParserEvent::{Content, Reasoning, RedactedReasoning, StopReason, Usage, ContextUsage}<br/>(+ internally accumulated multi-chunk ToolCall state)"]
     parse_stream["parse_kiro_stream (upstream::stream)<br/>translates ParserEvent -&gt; provider-agnostic KiroEvent"]
     openai_sse["api::openai::sse::encode_openai_sse<br/>chat.completion.chunk frames"]
     anthropic_sse["api::anthropic::sse::AnthropicSseFormatter<br/>message_start / content_block_* / message_delta /<br/>message_stop / ping frames"]
@@ -39,8 +39,10 @@ arrive. Internally:
   multi-byte UTF-8 character.
 - **Pattern matching** — `EVENT_PATTERNS` lists the literal JSON-fragment
   prefixes Kiro emits (`{"content":`, `{"text":`/`{"signature":` for
-  reasoning, `{"name":`/`{"input":`/`{"stop":` for tool-call lifecycle,
-  `{"usage":`, `{"contextUsagePercentage":`); the parser scans for
+  reasoning and `{"redactedContent":` for fully redacted reasoning,
+  `{"name":`/`{"input":`/`{"stop":` for tool-call lifecycle,
+  `{"usage":`, `{"contextUsagePercentage":`, and `{"stopReason":` from
+  `metadataEvent`); the parser scans for
   whichever occurs earliest in the buffer to decide what to parse next.
 - **Tool-call accumulation** — tool-call lifecycle fragments
   (`ToolStart`/`ToolInput`/`ToolStop`) don't map to a `ParserEvent`
@@ -75,13 +77,17 @@ with the parser above and Lanius's timeout policy:
   (`GatewayError::StreamReadTimeout`).
 
 It emits `KiroEvent`s — one struct with a `KiroEventType` discriminant
-(`Content`, `Thinking`, `ToolUse`, `Usage`, `ContextUsage`, `Error`) and the
-relevant fields populated for that variant, constructed only via the
+(`Content`, `Thinking`, `ToolUse`, `Usage`, `ContextUsage`, `StopReason`,
+`Error`) and the relevant fields populated for that variant, constructed only via the
 associated helpers (`KiroEvent::content`, `KiroEvent::thinking`, etc.) so
-callers never build an inconsistent combination by hand.
+callers never build an inconsistent combination by hand. Fully redacted
+reasoning arrives as a `Thinking` event with `redacted_thinking` set
+(`KiroEvent::redacted_thinking`); Kiro's stop reason (`END_TURN`,
+`TOOL_USE`, `MAX_TOKENS`, ...) as a `StopReason` event.
 
 `collect_stream_to_result` drains the whole stream into a `StreamResult`
-(accumulated content/thinking text, deduplicated tool calls, last-seen
+(accumulated content/thinking text, the thinking signature or redacted
+reasoning, deduplicated tool calls, the stop reason, last-seen
 usage/context-usage) for the non-streaming response path; `parse_kiro_stream`
 itself is used directly by the streaming response path and by `lanius-cli`'s
 `probe`/`replay` subcommands.
@@ -118,6 +124,11 @@ sequenceDiagram
         K->>F: thinking event(s)
         F->>C: content_block_start (index 0)
         F->>C: content_block_delta*
+        F->>C: content_block_stop
+    end
+    opt redacted reasoning present
+        K->>F: redacted thinking event
+        F->>C: content_block_start (redacted_thinking, full data)
         F->>C: content_block_stop
     end
     K->>F: text event(s)

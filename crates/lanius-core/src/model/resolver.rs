@@ -378,19 +378,16 @@ pub fn to_runtime_model_id(normalized: &str) -> String {
 /// # }
 /// ```
 pub async fn fetch_available_models(auth: Arc<AuthManager>, config: &Config) -> Option<Vec<Value>> {
-    // Mirrors the Kiro CLI: the inputs go both in the query string and the
-    // body. The control plane rejects requests without a profile ARN
-    // whenever one exists for the account.
+    // Mirrors the Kiro CLI 3.5.0: the inputs go in the JSON body only. The
+    // control plane rejects requests without a profile ARN whenever one
+    // exists for the account.
     let mut payload = serde_json::Map::new();
     payload.insert(
         "origin".to_owned(),
         Value::String(crate::utils::KIRO_ORIGIN.to_owned()),
     );
-    let profile_arn = auth.profile_arn().await.filter(|arn| !arn.is_empty());
-    let mut query = vec![("origin", crate::utils::KIRO_ORIGIN)];
-    if let Some(arn) = &profile_arn {
-        query.push(("profileArn", arn.as_str()));
-        payload.insert("profileArn".to_owned(), Value::String(arn.clone()));
+    if let Some(arn) = auth.profile_arn().await.filter(|arn| !arn.is_empty()) {
+        payload.insert("profileArn".to_owned(), Value::String(arn));
     }
     let body = serde_json::to_vec(&Value::Object(payload)).ok()?;
 
@@ -402,14 +399,14 @@ pub async fn fetch_available_models(auth: Arc<AuthManager>, config: &Config) -> 
             headers.insert(name, value);
         }
     }
-    headers.insert(
-        "x-amz-target",
-        reqwest::header::HeaderValue::from_static(
-            "KiroControlPlaneBearerService.ListAvailableModels",
-        ),
-    );
+    if let Ok(target) = reqwest::header::HeaderValue::from_str(&format!(
+        "{}.ListAvailableModels",
+        crate::utils::CONTROL_PLANE_SERVICE
+    )) {
+        headers.insert("x-amz-target", target);
+    }
 
-    let url = crate::utils::with_query(&format!("{}/", auth.control_plane_host().await), &query);
+    let url = format!("{}/", auth.control_plane_host().await);
     let mut request = client.client().post(url).body(body);
     for (name, value) in &headers {
         request = request.header(name, value);

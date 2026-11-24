@@ -33,8 +33,8 @@ use crate::error::{GatewayError, Result, classify_network_error};
 pub enum KiroEventType {
     /// Assistant text content is populated.
     Content,
-    /// Native thinking content (and possibly its closing signature) is
-    /// populated.
+    /// Native thinking content (and possibly its closing signature, or fully
+    /// redacted reasoning) is populated.
     Thinking,
     /// A completed tool call is populated.
     ToolUse,
@@ -42,6 +42,9 @@ pub enum KiroEventType {
     Usage,
     /// Context-window usage percentage is populated.
     ContextUsage,
+    /// Kiro's stop reason (`END_TURN`, `TOOL_USE`, `MAX_TOKENS`, ...) is
+    /// populated, in `content`.
+    StopReason,
     /// The stream ended with an error.
     Error,
 }
@@ -56,12 +59,16 @@ pub enum KiroEventType {
 pub struct KiroEvent {
     /// Which of the fields below is populated for this event.
     pub event_type: KiroEventType,
-    /// Assistant text content, for [`KiroEventType::Content`] events.
+    /// Assistant text content, for [`KiroEventType::Content`] events (and the
+    /// reason, for [`KiroEventType::StopReason`] and [`KiroEventType::Error`]).
     pub content: Option<String>,
     /// Native thinking text, for [`KiroEventType::Thinking`] events.
     pub thinking_content: Option<String>,
     /// Opaque signature closing a native thinking block, when Kiro sent one.
     pub thinking_signature: Option<String>,
+    /// Fully redacted reasoning (base64), for [`KiroEventType::Thinking`]
+    /// events carrying no readable thinking text.
+    pub redacted_thinking: Option<String>,
     /// The completed tool call, for [`KiroEventType::ToolUse`] events.
     pub tool_use: Option<super::parser::ToolCall>,
     /// Raw usage/billing JSON, for [`KiroEventType::Usage`] events.
@@ -110,6 +117,44 @@ impl KiroEvent {
             thinking_content: content,
             thinking_signature: signature,
             ..Self::empty(KiroEventType::Thinking)
+        }
+    }
+
+    /// Builds a [`KiroEventType::Thinking`] event carrying fully redacted
+    /// reasoning (Kiro's base64 `redactedContent`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::upstream::{KiroEvent, KiroEventType};
+    ///
+    /// let event = KiroEvent::redacted_thinking("LktUUn4=");
+    /// assert_eq!(event.event_type, KiroEventType::Thinking);
+    /// assert_eq!(event.redacted_thinking.as_deref(), Some("LktUUn4="));
+    /// ```
+    pub fn redacted_thinking(data: impl Into<String>) -> Self {
+        Self {
+            redacted_thinking: Some(data.into()),
+            ..Self::empty(KiroEventType::Thinking)
+        }
+    }
+
+    /// Builds a [`KiroEventType::StopReason`] event carrying Kiro's stop
+    /// reason in `content`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lanius_core::upstream::{KiroEvent, KiroEventType};
+    ///
+    /// let event = KiroEvent::stop_reason("MAX_TOKENS");
+    /// assert_eq!(event.event_type, KiroEventType::StopReason);
+    /// assert_eq!(event.content.as_deref(), Some("MAX_TOKENS"));
+    /// ```
+    pub fn stop_reason(reason: impl Into<String>) -> Self {
+        Self {
+            content: Some(reason.into()),
+            ..Self::empty(KiroEventType::StopReason)
         }
     }
 
@@ -198,12 +243,17 @@ impl KiroEvent {
             content: None,
             thinking_content: None,
             thinking_signature: None,
+            redacted_thinking: None,
             tool_use: None,
             usage: None,
             context_usage_percentage: None,
         }
     }
 }
+
+/// The value of Kiro's `metadataEvent.stopReason` when the model ran out of
+/// output tokens.
+pub const STOP_REASON_MAX_TOKENS: &str = "MAX_TOKENS";
 
 /// Aggregate result of fully draining a [`KiroEvent`] stream, as produced by
 /// [`collect_stream_to_result`]: concatenated regular content, concatenated
@@ -218,6 +268,10 @@ pub struct StreamResult {
     pub thinking_content: String,
     /// Opaque signature closing the thinking block, when Kiro sent one.
     pub thinking_signature: Option<String>,
+    /// Fully redacted reasoning (base64), when Kiro sent it.
+    pub redacted_thinking: Option<String>,
+    /// Kiro's stop reason, when the stream reported one.
+    pub stop_reason: Option<String>,
     /// All tool calls extracted from the stream (structured plus any
     /// bracket-style ones found in the final text), deduplicated.
     pub tool_calls: Vec<ToolCall>,
@@ -268,6 +322,7 @@ impl StreamResult {
                 event_type: KiroEventType::Thinking,
                 thinking_content,
                 thinking_signature,
+                redacted_thinking,
                 ..
             } => {
                 if let Some(thinking) = thinking_content {
@@ -276,7 +331,15 @@ impl StreamResult {
                 if thinking_signature.is_some() {
                     self.thinking_signature = thinking_signature;
                 }
+                if redacted_thinking.is_some() {
+                    self.redacted_thinking = redacted_thinking;
+                }
             }
+            KiroEvent {
+                event_type: KiroEventType::StopReason,
+                content: Some(reason),
+                ..
+            } => self.stop_reason = Some(reason),
             KiroEvent {
                 event_type: KiroEventType::ToolUse,
                 tool_use: Some(tool_call),
@@ -509,6 +572,8 @@ fn process_chunk(parser: &mut AwsEventStreamParser, chunk: &[u8]) -> Vec<KiroEve
         .map(|event| match event {
             ParserEvent::Content(content) => KiroEvent::content(json_content_to_string(content)),
             ParserEvent::Reasoning { text, signature } => KiroEvent::thinking(text, signature),
+            ParserEvent::RedactedReasoning(data) => KiroEvent::redacted_thinking(data),
+            ParserEvent::StopReason(reason) => KiroEvent::stop_reason(reason),
             ParserEvent::Usage(usage) => KiroEvent::usage(usage),
             ParserEvent::ContextUsage(usage) => KiroEvent::context_usage(usage.as_f64()),
         })
@@ -633,6 +698,23 @@ mod tests {
             result.tool_calls.is_empty(),
             "thinking text is not scanned for tool calls"
         );
+    }
+
+    #[tokio::test]
+    async fn stop_reason_and_redacted_reasoning_are_collected() {
+        let result = collect_stream_to_result(
+            input(&[
+                br#"{"content":"pong"}{"redactedContent":"LktUUn4="}{"stopReason":"MAX_TOKENS"}"#,
+            ]),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_or_default();
+        assert_eq!(result.content, "pong");
+        assert_eq!(result.redacted_thinking.as_deref(), Some("LktUUn4="));
+        assert_eq!(result.stop_reason.as_deref(), Some(STOP_REASON_MAX_TOKENS));
+        assert!(result.thinking_content.is_empty());
     }
 
     #[tokio::test]

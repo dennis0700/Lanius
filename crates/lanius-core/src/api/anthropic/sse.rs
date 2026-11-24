@@ -23,7 +23,7 @@ use crate::model::ModelInfoCache;
 use crate::tokenizer::{
     calculate_tokens_from_context_usage, count_tokens, estimate_request_tokens,
 };
-use crate::truncation::{TruncationStore, is_content_truncated};
+use crate::truncation::{TruncationStore, is_output_truncated};
 use crate::upstream::{
     KiroEvent, KiroEventType, StreamResult, ToolCall, WebSearchCall, parse_bracket_tool_calls,
 };
@@ -85,7 +85,11 @@ pub fn generate_message_id() -> String {
 /// assert!(signature.starts_with("sig_"));
 /// ```
 pub fn generate_thinking_signature() -> String {
-    format!("sig_{}", uuid::Uuid::new_v4().simple())
+    format!(
+        "{}{}",
+        crate::convert::PLACEHOLDER_SIGNATURE_PREFIX,
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 /// The pieces of a request needed to estimate its prompt token count
@@ -156,6 +160,7 @@ pub struct AnthropicSseFormatter {
     alias_text_pending: String,
     full_thinking: String,
     thinking_signature: Option<String>,
+    stop_reason: Option<String>,
     context_usage: Option<f64>,
     cache_usage: Map<String, Value>,
     tool_count: usize,
@@ -210,6 +215,7 @@ impl AnthropicSseFormatter {
             alias_text_pending: String::new(),
             full_thinking: String::new(),
             thinking_signature: None,
+            stop_reason: None,
             context_usage: None,
             cache_usage: Map::new(),
             tool_count: 0,
@@ -387,6 +393,22 @@ impl AnthropicSseFormatter {
                 if event.thinking_signature.is_some() {
                     self.thinking_signature = event.thinking_signature;
                 }
+                if let Some(data) = event.redacted_thinking {
+                    self.close_open_blocks(&mut frames)?;
+                    let index = self.current_index;
+                    frames.push(format_sse_event(
+                        "content_block_start",
+                        &json!({"type":"content_block_start","index":index,"content_block":{"type":"redacted_thinking","data":data}}),
+                    )?);
+                    frames.push(format_sse_event(
+                        "content_block_stop",
+                        &json!({"type":"content_block_stop","index":index}),
+                    )?);
+                    self.current_index += 1;
+                }
+            }
+            KiroEventType::StopReason => {
+                self.stop_reason = event.content;
             }
             KiroEventType::ToolUse => {
                 self.close_open_blocks(&mut frames)?;
@@ -502,7 +524,8 @@ impl AnthropicSseFormatter {
         if context_tokens.prompt_source != "unknown" {
             self.input_tokens = context_tokens.prompt_tokens;
         }
-        let content_truncated = is_content_truncated(
+        let content_truncated = is_output_truncated(
+            self.stop_reason.as_deref(),
             self.context_usage.is_some(),
             &self.full_content,
             self.tool_count > 0,
@@ -758,6 +781,9 @@ pub(crate) fn response_with_searches(
             json!({"type":"thinking","thinking":result.thinking_content,"signature":signature}),
         );
     }
+    if let Some(data) = result.redacted_thinking.take() {
+        content.push(json!({"type":"redacted_thinking","data":data}));
+    }
     for search in searches {
         let (tool_use, tool_result) = search_blocks(search);
         content.push(tool_use);
@@ -774,7 +800,8 @@ pub(crate) fn response_with_searches(
             .unwrap_or_else(generate_tool_id);
         content.push(json!({"type":"tool_use","id":id,"name":tool.name,"input":parse_tool_input(&tool.arguments)}));
     }
-    let truncated = is_content_truncated(
+    let truncated = is_output_truncated(
+        result.stop_reason.as_deref(),
         result.context_usage_percentage.is_some(),
         &result.content,
         !result.tool_calls.is_empty(),
@@ -1171,5 +1198,56 @@ mod native_thinking_tests {
                 {"type": "text", "text": "answer"}
             ])
         );
+    }
+
+    #[test]
+    fn redacted_reasoning_and_kiro_stop_reason_reach_the_client() {
+        let response = response_from_stream_result(
+            StreamResult {
+                content: "partial".into(),
+                redacted_thinking: Some("LktUUn4=".into()),
+                stop_reason: Some("MAX_TOKENS".into()),
+                context_usage_percentage: Some(1.0),
+                ..StreamResult::default()
+            },
+            "claude",
+            &ModelInfoCache::default(),
+            &request(),
+            &ToolNameAliases::default(),
+        );
+        assert_eq!(
+            response["content"],
+            json!([
+                {"type": "redacted_thinking", "data": "LktUUn4="},
+                {"type": "text", "text": "partial"}
+            ])
+        );
+        assert_eq!(
+            response["stop_reason"], "max_tokens",
+            "MAX_TOKENS overrides the completed-stream heuristic"
+        );
+    }
+
+    #[test]
+    fn streamed_redacted_reasoning_is_its_own_block() {
+        let mut formatter = AnthropicSseFormatter::new(
+            "claude",
+            ModelInfoCache::default(),
+            request(),
+            "conv",
+            None,
+        );
+        formatter.start().unwrap_or_default();
+        let frames = formatter
+            .push(KiroEvent::redacted_thinking("LktUUn4="))
+            .unwrap_or_default();
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].contains(r#""type": "redacted_thinking""#));
+        assert!(frames[0].contains(r#""data": "LktUUn4=""#));
+        assert!(frames[1].contains("content_block_stop"));
+        let frames = formatter
+            .push(KiroEvent::content("answer"))
+            .unwrap_or_default();
+        assert!(frames[0].contains(r#""index": 1"#));
     }
 }

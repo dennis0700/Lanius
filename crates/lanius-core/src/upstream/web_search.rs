@@ -1,8 +1,8 @@
 //! Kiro's native `web_search` tool.
 //!
 //! Mirrors the Kiro CLI: a JSON-RPC `tools/call` request sent through the
-//! `AmazonCodeWhispererStreamingService.InvokeMCP` operation on the Kiro
-//! runtime host. The tool's results arrive as a JSON document embedded in
+//! `KiroRuntimeService.InvokeMCP` operation on the Kiro runtime host. The
+//! tool's results arrive as a JSON document embedded in
 //! `result.content[0].text`, which is expanded here into
 //! [`WebSearchResponse`]; the raw document is kept as well so it can be fed
 //! back to the model verbatim as a tool result.
@@ -14,10 +14,15 @@ use serde_json::{Value, json};
 use super::client::{KiroHttpClient, retry_delay, upstream_error_from_body};
 use crate::config::MAX_RETRIES;
 use crate::error::{GatewayError, Result, classify_network_error};
-use crate::utils::{API_RUNTIME, API_STREAMING};
+use crate::utils::{API_CONTROL_PLANE_BEARER, API_RUNTIME, CONTROL_PLANE_SERVICE, RUNTIME_SERVICE};
 
-const INVOKE_MCP_TARGET: &str = "AmazonCodeWhispererStreamingService.InvokeMCP";
-const GET_PROFILE_TARGET: &str = "AmazonCodeWhispererService.GetProfile";
+fn invoke_mcp_target() -> String {
+    format!("{RUNTIME_SERVICE}.InvokeMCP")
+}
+
+fn get_profile_target() -> String {
+    format!("{CONTROL_PLANE_SERVICE}.GetProfile")
+}
 
 /// How long a `GetProfile` web-tools verdict is reused before asking again,
 /// so a console change takes effect without restarting the gateway.
@@ -175,11 +180,11 @@ impl KiroHttpClient {
         let body = serde_json::to_vec(&json!({"profileArn": arn}))?;
         let token = auth.access_token_and_autofetch().await?;
         let mut request = self.client().post(url).body(body);
-        for (name, value) in auth.headers_for(&token, API_RUNTIME) {
+        for (name, value) in auth.headers_for(&token, API_CONTROL_PLANE_BEARER) {
             request = request.header(name, value);
         }
         let response = request
-            .header("x-amz-target", GET_PROFILE_TARGET)
+            .header("x-amz-target", get_profile_target())
             .send()
             .await?;
         let status = response.status();
@@ -223,8 +228,8 @@ fn store_policy(arn: String, enabled: bool) {
 impl KiroHttpClient {
     /// Runs `query` through Kiro's native `web_search` MCP tool.
     ///
-    /// Uses the `AmazonCodeWhispererStreamingService.InvokeMCP` operation on
-    /// the Kiro runtime host, as the Kiro CLI does. Shares the chat client's
+    /// Uses the `KiroRuntimeService.InvokeMCP` operation on the Kiro runtime
+    /// host, as the Kiro CLI does. Shares the chat client's
     /// retry policy: `403` forces a token
     /// refresh, `429`/`5xx` and retryable transport errors back off
     /// exponentially.
@@ -262,10 +267,10 @@ impl KiroHttpClient {
         for attempt in 0..MAX_RETRIES {
             let token = auth.access_token_and_autofetch().await?;
             let mut request = self.client().post(&url).body(body.clone());
-            for (name, value) in auth.headers_for(&token, API_STREAMING) {
+            for (name, value) in auth.headers_for(&token, API_RUNTIME) {
                 request = request.header(name, value);
             }
-            request = request.header("x-amz-target", INVOKE_MCP_TARGET);
+            request = request.header("x-amz-target", invoke_mcp_target());
             if let Some(arn) = &profile_arn {
                 request = request.header("x-amzn-kiro-profile-arn", arn);
             }

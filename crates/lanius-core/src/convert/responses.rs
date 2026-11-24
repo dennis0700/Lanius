@@ -414,9 +414,11 @@ pub fn reasoning_request_from_responses(request: &ResponsesRequest) -> Reasoning
 ///     &request, "conv-1", None, &Config::default(), &ModelInfoCache::default(),
 ///     &mut ToolNameAliases::default(),
 /// ).expect("conversion succeeds");
-/// let content = result.payload["conversationState"]["currentMessage"]["userInputMessage"]
-///     ["content"].as_str().unwrap_or_default();
-/// assert!(content.contains("be brief") && content.contains("hello"));
+/// let state = &result.payload["conversationState"];
+/// // Like the Kiro CLI, the instructions open the history and the input is the current turn.
+/// let system = state["history"][0]["userInputMessage"]["content"].as_str().unwrap_or_default();
+/// assert!(system.starts_with("be brief"));
+/// assert_eq!(state["currentMessage"]["userInputMessage"]["content"], "hello");
 /// ```
 pub fn responses_to_kiro(
     request: &ResponsesRequest,
@@ -635,12 +637,20 @@ mod tests {
         let payload = payload(&request);
         let state = &payload["conversationState"];
         let history = state["history"].as_array().cloned().unwrap_or_default();
-        assert_eq!(history.len(), 2);
-        let first = history[0]["userInputMessage"]["content"]
-            .as_str()
-            .unwrap_or_default();
-        assert!(first.starts_with("sys") && first.contains("list files"));
-        let assistant = &history[1]["assistantResponseMessage"];
+        assert_eq!(history.len(), 4);
+        assert!(
+            history[0]["userInputMessage"]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("sys"),
+            "the system prompt opens the history"
+        );
+        assert_eq!(
+            history[1]["assistantResponseMessage"]["content"],
+            "I will follow these instructions."
+        );
+        assert_eq!(history[2]["userInputMessage"]["content"], "list files");
+        let assistant = &history[3]["assistantResponseMessage"];
         assert_eq!(assistant["content"], "Running ls.");
         assert_eq!(assistant["toolUses"][0]["input"], json!({"cmd": "ls"}));
         assert_eq!(
@@ -843,10 +853,12 @@ mod tests {
         let alias = aliases.alias_for(long);
         assert_ne!(alias, long);
         let state = &payload["conversationState"];
-        assert_eq!(
-            state["history"][1]["assistantResponseMessage"]["toolUses"][0]["name"],
-            alias
-        );
+        let called = state["history"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find_map(|entry| entry["assistantResponseMessage"]["toolUses"][0]["name"].as_str());
+        assert_eq!(called, Some(alias.as_str()));
         assert_eq!(
             state["currentMessage"]["userInputMessage"]["userInputMessageContext"]["tools"][0]["toolSpecification"]
                 ["name"],

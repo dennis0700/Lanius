@@ -104,7 +104,11 @@ id, and profile ARN, `build_kiro_payload` performs (in order):
    starting on a user turn.
 5. **History/current split** — the normalized sequence is split into
    `history` (everything but the last message) and the `currentMessage`
-   Kiro expects as the live turn.
+   Kiro expects as the live turn. As in the Kiro CLI, a non-empty system
+   prompt opens the history as its own user turn, followed by the
+   assistant turn `I will follow these instructions.`; Kiro-signed
+   reasoning on assistant turns is replayed as `reasoningContent` (see
+   [compatibility.md](compatibility.md#native-reasoning-replay)).
 6. **Native reasoning fields** — if the resolved model supports native
    thinking/reasoning (see [model-catalog.md](model-catalog.md)), the
    request's reasoning settings are rendered into Kiro's

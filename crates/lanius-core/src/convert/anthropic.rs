@@ -288,6 +288,7 @@ fn convert_message(
     };
     if role == "assistant" {
         output.tool_calls = extract_tool_uses(blocks, aliases);
+        output.reasoning = extract_reasoning(blocks);
     }
     if role == "user" {
         output.tool_results = extract_tool_results(blocks);
@@ -300,6 +301,32 @@ fn convert_message(
             .extend(extract_images_from_tool_results(blocks));
     }
     Ok(output)
+}
+
+/// Extracts the first thinking block Kiro issued: a `thinking` block carrying a Kiro
+/// signature, or a `redacted_thinking` block. Blocks with Lanius's placeholder
+/// signatures are skipped, since Kiro would reject them (see
+/// [`core::is_upstream_signature`]).
+fn extract_reasoning(blocks: &[ContentBlock]) -> Option<core::UnifiedReasoning> {
+    blocks.iter().find_map(|block| match block {
+        ContentBlock::Thinking(thinking) if core::is_upstream_signature(&thinking.signature) => {
+            Some(core::UnifiedReasoning::Text {
+                text: thinking.thinking.clone(),
+                signature: thinking.signature.clone(),
+            })
+        }
+        ContentBlock::Unknown(unknown)
+            if unknown.0.get("type").and_then(Value::as_str) == Some("redacted_thinking") =>
+        {
+            unknown
+                .0
+                .get("data")
+                .and_then(Value::as_str)
+                .filter(|data| !data.is_empty())
+                .map(|data| core::UnifiedReasoning::Redacted(data.to_owned()))
+        }
+        _ => None,
+    })
 }
 
 /// Extracts `ToolUse` blocks (with non-empty id and name) from an assistant message's
@@ -459,6 +486,43 @@ mod tests {
             payload["conversationState"]["history"][1]["assistantResponseMessage"]["toolUses"][0]["name"],
             legal_collision
         );
+    }
+
+    #[test]
+    fn thinking_blocks_with_kiro_signatures_become_reasoning() {
+        let messages: Vec<AnthropicMessage> = serde_json::from_value(serde_json::json!([
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "plan", "signature": "EpkCCpQB"},
+                {"type": "text", "text": "done"}
+            ]},
+            {"role": "assistant", "content": [
+                {"type": "redacted_thinking", "data": "LktUUn4="},
+                {"type": "text", "text": "done"}
+            ]},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "plan", "signature": "sig_0123456789abcdef"},
+                {"type": "text", "text": "done"}
+            ]}
+        ]))
+        .unwrap_or_else(|error| panic!("thinking fixture must deserialize: {error}"));
+        let converted = convert_anthropic_messages(&messages, &mut ToolNameAliases::default())
+            .unwrap_or_else(|error| panic!("conversion failed: {error}"));
+        assert_eq!(
+            converted[0].reasoning,
+            Some(core::UnifiedReasoning::Text {
+                text: "plan".into(),
+                signature: "EpkCCpQB".into()
+            })
+        );
+        assert_eq!(
+            converted[1].reasoning,
+            Some(core::UnifiedReasoning::Redacted("LktUUn4=".into()))
+        );
+        assert_eq!(
+            converted[2].reasoning, None,
+            "Lanius placeholder signatures are never sent to Kiro"
+        );
+        assert_eq!(converted[0].content, serde_json::json!("done"));
     }
 
     #[test]

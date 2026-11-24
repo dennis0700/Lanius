@@ -108,7 +108,7 @@ flowchart TD
     auth_manager["auth::AuthManager<br/>ensures a fresh bearer token (refreshing if needed)"]
     kiro_client["upstream::client::KiroHttpClient<br/>POST generateAssistantResponse, retry/backoff, 403 -&gt; refresh"]
     aws_parser["upstream::parser::AwsEventStreamParser<br/>incremental JSON-fragment decoding -&gt; ParserEvent<br/>(AWS event-stream framed bytes)"]
-    kiro_stream["upstream::stream::parse_kiro_stream<br/>ParserEvent -&gt; provider-agnostic KiroEvent (Content/Thinking/<br/>ToolUse/Usage/ContextUsage/Error)"]
+    kiro_stream["upstream::stream::parse_kiro_stream<br/>ParserEvent -&gt; provider-agnostic KiroEvent (Content/Thinking/<br/>ToolUse/Usage/ContextUsage/StopReason/Error)"]
     openai_sse["api::openai::sse<br/>(chunk/response)"]
     anthropic_sse["api::anthropic::sse<br/>(SSE state machine/response)"]
     truncation_store["truncation::TruncationStore<br/>(records/recovers from output cut off by Kiro's size limits)"]

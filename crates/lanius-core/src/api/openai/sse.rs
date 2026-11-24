@@ -27,7 +27,7 @@ use crate::model::ModelInfoCache;
 use crate::tokenizer::{
     calculate_tokens_from_context_usage, count_message_tokens, count_tokens, count_tools_tokens,
 };
-use crate::truncation::{TruncationStore, is_content_truncated};
+use crate::truncation::{TruncationStore, is_output_truncated};
 use crate::upstream::{
     KiroEvent, KiroEventType, StreamResult, ToolCall, collect_stream_to_result,
     deduplicate_tool_calls, parse_bracket_tool_calls,
@@ -187,6 +187,7 @@ where
         let mut metering_data = None;
         let mut received_usage = false;
         let mut context_usage = None;
+        let mut stop_reason: Option<String> = None;
         futures_util::pin_mut!(events);
 
         while let Some(event) = events.next().await {
@@ -256,6 +257,9 @@ where
                 KiroEvent { event_type: KiroEventType::ContextUsage, context_usage_percentage: Some(percentage), .. } => {
                     context_usage = Some(percentage);
                 }
+                KiroEvent { event_type: KiroEventType::StopReason, content: Some(reason), .. } => {
+                    stop_reason = Some(reason);
+                }
                 _ => {}
             }
         }
@@ -277,7 +281,8 @@ where
         let bracket_calls = parse_bracket_tool_calls(&full_content);
         tool_calls.extend(bracket_calls);
         let tool_calls = deduplicate_tool_calls(tool_calls);
-        let content_truncated = is_content_truncated(
+        let content_truncated = is_output_truncated(
+            stop_reason.as_deref(),
             received_usage || context_usage.is_some(),
             &full_content,
             !tool_calls.is_empty(),
@@ -382,7 +387,8 @@ pub(crate) fn response_value_from_result(
     for tool in &mut result.tool_calls {
         tool.name = context.tool_name_aliases.original_for(&tool.name);
     }
-    let content_truncated = is_content_truncated(
+    let content_truncated = is_output_truncated(
+        result.stop_reason.as_deref(),
         result.usage.is_some() || result.context_usage_percentage.is_some(),
         &result.content,
         !result.tool_calls.is_empty(),

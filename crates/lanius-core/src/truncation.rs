@@ -425,6 +425,32 @@ pub fn is_content_truncated(
     !stream_completed_normally && !full_content.is_empty() && !has_tool_calls
 }
 
+/// [`is_content_truncated`] that also trusts Kiro's own `stopReason`: a
+/// `MAX_TOKENS` stop always means the output was cut off, whatever the
+/// heuristic says, while any other reported stop reason means the model
+/// finished on its own.
+///
+/// # Examples
+///
+/// ```
+/// use lanius_core::truncation::is_output_truncated;
+///
+/// assert!(is_output_truncated(Some("MAX_TOKENS"), true, "partial", false));
+/// assert!(!is_output_truncated(Some("END_TURN"), false, "complete", false));
+/// assert!(is_output_truncated(None, false, "partial", false));
+/// ```
+pub fn is_output_truncated(
+    stop_reason: Option<&str>,
+    stream_completed_normally: bool,
+    full_content: &str,
+    has_tool_calls: bool,
+) -> bool {
+    match stop_reason {
+        Some(reason) => reason == crate::upstream::STOP_REASON_MAX_TOKENS,
+        None => is_content_truncated(stream_completed_normally, full_content, has_tool_calls),
+    }
+}
+
 /// Builds a synthetic, error-flagged tool result explaining that this tool
 /// call was truncated by the upstream API, for injection into the
 /// conversation history in place of (or alongside) the real result.
@@ -608,6 +634,28 @@ mod tests {
         let store = TruncationStore::new(Duration::from_secs(60), 0);
         store.save_tool_truncation("conversation", "call", "tool", json!({}));
         assert_eq!(store.stats().total, 0);
+    }
+
+    #[test]
+    fn is_output_truncated_trusts_kiro_stop_reason_over_the_heuristic() {
+        // MAX_TOKENS wins even when the stream otherwise ended normally.
+        assert!(is_output_truncated(
+            Some("MAX_TOKENS"),
+            true,
+            "partial",
+            false
+        ));
+        // Any other stop reason means the model finished on its own.
+        assert!(!is_output_truncated(
+            Some("END_TURN"),
+            false,
+            "complete",
+            false
+        ));
+        assert!(!is_output_truncated(Some("TOOL_USE"), false, "", true));
+        // Without one, the stream-completion heuristic decides.
+        assert!(is_output_truncated(None, false, "partial", false));
+        assert!(!is_output_truncated(None, true, "complete", false));
     }
 
     #[test]

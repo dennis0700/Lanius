@@ -25,7 +25,15 @@ category — `cargo test --workspace` runs all of it.
   - `lanius-core/tests/tool_followup_payload.rs` — the tool-definition/
     tool-result alias round trip across a full request conversion (see
     [conversion.md](conversion.md) and
-    [compatibility.md](compatibility.md#tool-name-aliasing)).
+    [compatibility.md](compatibility.md#tool-name-aliasing)), plus the
+    request shape the Kiro CLI 3.5.0 sends: `conversationState` field order,
+    agent identity fields, and the system prompt pair at the head of the
+    history.
+  - `lanius-core/tests/kiro_cli_captures.rs` — golden tests over raw
+    response streams captured from the official Kiro CLI 3.5.0
+    (`tests/fixtures/*.bin`: a tool-use turn with a hidden-reasoning
+    signature, and a turn with fully redacted reasoning), decoded at every
+    chunk size from 1 to 64 bytes.
   - `lanius-core/tests/parser_properties.rs` — property-based tests (see
     below) for `AwsEventStreamParser`.
   - `lanius-cli/tests/gui_api_contract.rs` — contract tests protecting the
@@ -72,7 +80,7 @@ against a real captured response using `lanius probe --capture` +
 cargo test -p lanius-core
 
 # One test (by substring match on the test name)
-cargo test -p lanius-core is_content_truncated
+cargo test -p lanius-core is_output_truncated
 
 # Doctests only
 cargo test --workspace --doc

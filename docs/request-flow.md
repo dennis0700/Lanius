@@ -163,11 +163,12 @@ sequenceDiagram
 ```
 
 - Search: `KiroHttpClient::web_search` sends JSON-RPC `tools/call` through
-  `AmazonCodeWhispererStreamingService.InvokeMCP` on the runtime host, like
+  `KiroRuntimeService.InvokeMCP` on the runtime host, like
   the Kiro CLI.
 - Continuation: the current user turn moves into history, followed by an
-  assistant turn with the round's text and `toolUses`; a new empty user turn
-  carries `toolResults` with the raw result document as a `json` block.
+  assistant turn with the round's text, `toolUses` and Kiro-signed
+  reasoning; a new empty user turn carries `toolResults` with the raw
+  result document as a `json` block.
 - Rounds that also call client tools end the loop; those calls reach the
   client and the `web_search` calls of that round are dropped. Calls beyond
   the budget get a `max_uses_exceeded` error result, and the loop stops one

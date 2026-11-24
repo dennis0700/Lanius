@@ -99,7 +99,7 @@ flowchart TD
     auth_manager["auth::AuthManager<br/>确保 bearer token 有效（必要时刷新）"]
     kiro_client["upstream::client::KiroHttpClient<br/>POST generateAssistantResponse，重试/退避，403 -&gt; 刷新"]
     aws_parser["upstream::parser::AwsEventStreamParser<br/>增量 JSON 片段解码 -&gt; ParserEvent<br/>（AWS event-stream 分帧字节）"]
-    kiro_stream["upstream::stream::parse_kiro_stream<br/>ParserEvent -&gt; 与提供方无关的 KiroEvent（Content/Thinking/<br/>ToolUse/Usage/ContextUsage/Error）"]
+    kiro_stream["upstream::stream::parse_kiro_stream<br/>ParserEvent -&gt; 与提供方无关的 KiroEvent（Content/Thinking/<br/>ToolUse/Usage/ContextUsage/StopReason/Error）"]
     openai_sse["api::openai::sse<br/>（chunk/响应）"]
     anthropic_sse["api::anthropic::sse<br/>（SSE 状态机/响应）"]
     truncation_store["truncation::TruncationStore<br/>（记录并恢复因 Kiro 大小限制被截断的输出）"]
